@@ -837,6 +837,32 @@ class NativeQrCamera(private val activity: MainActivity) {
     private var reader:android.media.ImageReader?=null
     private var surface:android.view.Surface?=null
     private var thread:android.os.HandlerThread?=null
+    private var frameSize:android.util.Size?=null
+    private var sensor=0
+    // TextureView stretches the camera frame to the view; keep the frame's
+    // proportions instead, upright for the current display rotation and
+    // fitted whole inside the view (the scanned frame is all visible).
+    @Suppress("DEPRECATION")
+    private fun fit() {
+        val view=texture?:return
+        val size=frameSize?:return
+        val w=view.width.toFloat();val h=view.height.toFloat()
+        if(w<=0f || h<=0f) return
+        val degrees=activity.windowManager.defaultDisplay.rotation*90
+        // The camera delivers the frame upright for the natural orientation.
+        val upright=sensor%180!=0
+        val cw=(if(upright) size.height else size.width).toFloat()
+        val ch=(if(upright) size.width else size.height).toFloat()
+        val turned=degrees%180!=0
+        val dw=if(turned) ch else cw;val dh=if(turned) cw else ch
+        val cx=w/2f;val cy=h/2f
+        val matrix=android.graphics.Matrix()
+        matrix.setRectToRect(android.graphics.RectF(0f,0f,w,h),android.graphics.RectF(cx-cw/2f,cy-ch/2f,cx+cw/2f,cy+ch/2f),android.graphics.Matrix.ScaleToFit.FILL)
+        matrix.postRotate(-degrees.toFloat(),cx,cy)
+        val scale=minOf(w/dw,h/dh)
+        matrix.postScale(scale,scale,cx,cy)
+        view.setTransform(matrix)
+    }
     fun available():Boolean = QR_CAMERA && try {
         activity.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_CAMERA_ANY) &&
             activity.getSystemService(android.hardware.camera2.CameraManager::class.java).cameraIdList.isNotEmpty()
@@ -891,7 +917,7 @@ class NativeQrCamera(private val activity: MainActivity) {
         attempt{reader?.close()};reader=null
         attempt{surface?.release()};surface=null
         attempt{thread?.quitSafely()};thread=null
-        attempt{texture?.surfaceTextureListener=null};texture=null
+        attempt{texture?.surfaceTextureListener=null};texture=null;frameSize=null
         attempt{dialog?.setOnDismissListener(null)}
         attempt{dialog?.dismiss()};dialog=null
         if(!clean)synchronized(this){if(id==request)status=2}
@@ -916,7 +942,7 @@ class NativeQrCamera(private val activity: MainActivity) {
         dialog=window;texture=preview
         preview.surfaceTextureListener=object:android.view.TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(t:android.graphics.SurfaceTexture,w:Int,h:Int){open(request,t)}
-            override fun onSurfaceTextureSizeChanged(t:android.graphics.SurfaceTexture,w:Int,h:Int){}
+            override fun onSurfaceTextureSizeChanged(t:android.graphics.SurfaceTexture,w:Int,h:Int){fit()}
             override fun onSurfaceTextureUpdated(t:android.graphics.SurfaceTexture){}
             override fun onSurfaceTextureDestroyed(t:android.graphics.SurfaceTexture):Boolean{end(request,1);return true}
         }
@@ -938,6 +964,8 @@ class NativeQrCamera(private val activity: MainActivity) {
                 ?.minByOrNull{kotlin.math.abs(it.width-640)+kotlin.math.abs(it.height-480)}
             if(size==null){end(request,2);return}
             t.setDefaultBufferSize(size.width,size.height)
+            frameSize=size;sensor=chars.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION)?:0
+            fit()
             val target=android.view.Surface(t);surface=target
             val images=android.media.ImageReader.newInstance(size.width,size.height,android.graphics.ImageFormat.YUV_420_888,2);reader=images
             val worker=android.os.HandlerThread("qv-camera").apply{start()};thread=worker

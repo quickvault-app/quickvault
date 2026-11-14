@@ -949,6 +949,9 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Fixed
 
+- 2026-11-14: The Android QR scan preview keeps the camera's proportions
+  (it was stretched to the dialog's shape), stays upright when the screen
+  rotates and shows the whole scanned frame. Detection is unchanged.
 - 2026-11-14: Linux video previews also recover when the slider is moved
   backward after the video ends. The fresh memory source restores the selected
   frame while paused, and Play resumes from there. Regression checks cover
