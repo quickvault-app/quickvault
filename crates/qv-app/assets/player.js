@@ -447,9 +447,23 @@ function wirePlayer(player){
     for(const name of ["play","pause","ended","emptied","loadedmetadata","durationchange","volumechange","seeked","timeupdate"])media.addEventListener(name,state);
     for(const name of ["play","pause","ended"])media.addEventListener(name,wake);
     play.addEventListener("click",toggle);
+    // Android: the player element itself goes full screen; leaving it (the
+    // button, Back, closing the preview) is the engine's fullscreenchange.
+    const fs=player.querySelector(".v-fs[data-qv-fs='element']");
+    if(fs){
+        const label=()=>{const on=document.fullscreenElement===player;fs.setAttribute("aria-label",on?"Exit full screen":"Full screen");fs.title=on?"Exit full screen":"Full screen";};
+        fs.addEventListener("click",()=>{
+            if(document.fullscreenElement===player)document.exitFullscreen().catch(()=>{});
+            else player.requestFullscreen?.().catch(()=>{});
+        });
+        player.addEventListener("fullscreenchange",label);
+    }
+    // A tap that only brings hidden controls back does not also play/pause.
+    let woke=false;
+    player.addEventListener("pointerdown",()=>{woke=player.hasAttribute("data-idle");},{capture:true,passive:true});
     if(media instanceof HTMLVideoElement){
-        // A double click goes full screen (Rust), so a single click waits.
-        media.addEventListener("click",()=>{clearTimeout(click);click=setTimeout(toggle,220);});
+        // A double click goes full screen, so a single click waits.
+        media.addEventListener("click",()=>{clearTimeout(click);if(woke){woke=false;return;}click=setTimeout(toggle,220);});
         media.addEventListener("dblclick",()=>{clearTimeout(click);player.querySelector(".v-fs")?.click();});
     }
     seek.addEventListener("input",()=>{dragging=true;draw();});

@@ -949,6 +949,10 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Fixed
 
+- 2026-11-14: Video previews on Android have a full-screen button again: the
+  player fills the screen with the system bars hidden; the button, Back,
+  closing the preview or leaving the app ends it. A tap that only brings the
+  hidden controls back no longer also pauses the video (plan 0057).
 - 2026-11-14: The Android QR scan preview keeps the camera's proportions
   (it was stretched to the dialog's shape), stays upright when the screen
   rotates and shows the whole scanned frame. Detection is unchanged.

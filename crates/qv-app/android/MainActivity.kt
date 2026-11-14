@@ -143,6 +143,10 @@ class MainActivity : WryActivity() {
                             override fun onShowFileChooser(v: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
                                 callback.onReceiveValue(null); return true
                             }
+                            // The video player's full screen (plan 0057): the page's
+                            // full-screen element, shown in this secure window.
+                            override fun onShowCustomView(v: View, callback: CustomViewCallback) = showFull(v, callback)
+                            override fun onHideCustomView() = hideFull()
                         }
                         WebView.setWebContentsDebuggingEnabled(false)
                         hardened = true
@@ -168,6 +172,8 @@ class MainActivity : WryActivity() {
         // when nothing was left to close.
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                // Back leaves the video's full screen first.
+                fullCallback?.let { it.onCustomViewHidden(); hideFull(); return }
                 val view = findWebview(window.decorView) ?: return
                 val now = SystemClock.uptimeMillis()
                 view.requestFocus()
@@ -197,6 +203,28 @@ class MainActivity : WryActivity() {
         bars.isAppearanceLightStatusBars = !night
         bars.isAppearanceLightNavigationBars = !night
     }
+    // The page's full-screen element over the whole window, system bars
+    // hidden (a swipe shows them briefly). FLAG_SECURE covers it: it is a
+    // view of this activity's window, never a separate window.
+    private var fullView: View? = null
+    private var fullCallback: WebChromeClient.CustomViewCallback? = null
+    private fun showFull(view: View, callback: WebChromeClient.CustomViewCallback) {
+        if (fullView != null || !secureWindow) { callback.onCustomViewHidden(); return }
+        val decor = window.decorView as? ViewGroup ?: run { callback.onCustomViewHidden(); return }
+        fullView = view; fullCallback = callback
+        view.setBackgroundColor(0xFF000000.toInt())
+        decor.addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val bars = androidx.core.view.WindowCompat.getInsetsController(window, decor)
+        bars.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        bars.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+    }
+    private fun hideFull() {
+        val view = fullView ?: return
+        fullView = null; fullCallback = null
+        (window.decorView as? ViewGroup)?.removeView(view)
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+            .show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+    }
     fun qvBackAtRoot() = runOnUiThread {
         val now = SystemClock.elapsedRealtime()
         if (rootBackAt != 0L && now - rootBackAt <= 2000) {
@@ -219,6 +247,9 @@ class MainActivity : WryActivity() {
     // pause keeps the scan (Rust defers the background lock for it, as for the
     // document picker). Any other pause ends the scan.
     override fun onPause() { foreground = false; lifecycleGeneration++; if (!qr.awaitingPermission()) qr.cancel(); super.onPause() }
+    // Leaving the app also leaves the video's full screen (the lock closes the
+    // preview anyway).
+    override fun onStop() { fullCallback?.let { it.onCustomViewHidden(); hideFull() }; super.onStop() }
     // The Rust/Dioxus runtime starts once per process (wry/ndk-context, and
     // this app's own bridge). After destroy, Rust locks and acknowledges, then
     // the process ends so any later activity starts fresh (plan 0035).

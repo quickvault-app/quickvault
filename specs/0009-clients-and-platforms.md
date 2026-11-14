@@ -300,9 +300,12 @@ release, but no longer gates the feature.
   the entry's attachments as a shelf with an add tile. Opening one previews
   it in a full-window viewer under 0003 §6.4: images (fit or actual size,
   panning), audio and video (the app's own player: play/pause, seek, time,
-  mute and volume; for video on desktop a full-screen button that makes the
-  window full screen, with the controls hiding while it plays under a still
-  pointer), text (reader). Other types offer only
+  mute and volume; for video a full-screen button: on desktop it makes the
+  window full screen, on Android the player itself becomes the engine's
+  full-screen element, shown over the whole app window with the system bars
+  hidden, and the button, Back, closing the preview or leaving the app ends
+  it; the controls hide while video plays under a still pointer), text
+  (reader). Other types offer only
   saving a copy. Verify through bounded protected chunks and serve authenticated
   ranges through an unguessable per-preview route on the app's existing numeric
   loopback listener (0003 §6.4), never a plaintext file or whole-media response
@@ -569,6 +572,8 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
 
 ## Changelog
 
+- 2026-11-14: §1.8: video full screen on Android (the player element, system
+  bars hidden; button, Back, close or leaving ends it) (owner, 0057).
 - 2026-11-14: §1.8: backward seek after EOS uses a fresh memory source on
   Linux and preserves the paused state and selected position (owner, 0057).
 - 2026-11-14: §1.8: Linux replay reconstructs its memory source; releasing a

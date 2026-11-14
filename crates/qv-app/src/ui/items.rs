@@ -1383,6 +1383,14 @@ pub(crate) fn Viewer(
                         Svg { icon: if full() { Icon::Shrink } else { Icon::Expand } }
                     }
                 }
+                // Android: the player itself goes full screen (player.js; the
+                // activity shows it over the whole screen); the button or Back
+                // leaves it.
+                if video && cfg!(target_os = "android") {
+                    button { class: "v-cb v-fs", id: "viewer-full", r#type: "button", "data-qv-fs": "element", "aria-label": "Full screen", title: "Full screen",
+                        span { class: "i-expand", Svg { icon: Icon::Expand } } span { class: "i-shrink", Svg { icon: Icon::Shrink } }
+                    }
+                }
             }
         }
     };

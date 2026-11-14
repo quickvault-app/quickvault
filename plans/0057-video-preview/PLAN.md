@@ -428,3 +428,15 @@ benefit while the listener stays; media keeps the listener for now.
     `requestVideoFrameCallback`) and main-thread stalls with compositing on.
     Compare unshifted offsets (pts ≥ dts) and FFmpeg's fragmenting. The
     owner is getting a second opinion first.
+- 2026-11-14 (owner, Android full screen): the owner could not find full
+  screen on the phone: the own controls rendered the button on desktop only,
+  and the engine's controls (with their own full-screen button) were gone.
+  Android now renders the same button; `player.js` makes the `.v-player`
+  element the page's full-screen element (`requestFullscreen`, exit with
+  `exitFullscreen`), and the activity's `WebChromeClient` shows the engine's
+  full-screen view over its own (FLAG_SECURE) window with the system bars
+  hidden. Back, `onStop`, the button and closing the preview end it. A tap
+  that only wakes idle controls no longer toggles playback. Spec 0009 §1.8
+  amended. Same session: the QR scan preview keeps the camera frame's
+  proportions (`fit()` transform on the TextureView). Both await the owner's
+  check on the phone.
