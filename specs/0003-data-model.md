@@ -168,10 +168,16 @@ the adapter writes protected chunks directly rather than making plaintext Vec
 response copies. Malformed/multiple/unsatisfiable ranges fail416 without a full
 content fallback. Where the platform media engine would buffer streamed media
 to a file (WebKitGTK on Linux writes playing HTTP media to an unlinked file in
-`/var/tmp`), the client instead fetches the verified content once over that
+`/var/tmp`), the client instead fetches the verified content over that
 route into renderer memory and plays it from there (owner request,
 2026-11-14): an MP4 as Media Source Extensions fragments rewritten losslessly
 from its own sample tables (no re-encoding), anything else as an in-memory blob.
+An explicit replay or backward seek after the end creates a fresh memory
+playback source from the still-live authenticated route; do not retain
+application-owned plaintext for either action. Close, navigation, lock or hiding
+cancels pending playback loads, and late completions must not restore playback.
+A seek restores the selected position and preserves the paused state; moving
+the slider alone does not start playback.
 For that fetch the listener grants CORS to the app's own origin only, and the
 CSP adds `blob:` to media-src and the listener origin to connect-src. The
 renderer's copies are dropped on close, navigation, lock and hiding, and
@@ -229,6 +235,11 @@ searchable. Paging MUST NOT silently omit records, fields or conflicts.
 
 ## Changelog
 
+- 2026-11-14: §6.4: backward seek after EOS also reconstructs the memory
+  source, restoring the chosen position while paused (owner follow-up, 0057).
+- 2026-11-14: §6.4: replay reconstructs the memory playback source using the
+  still-live authenticated capability, with cancellation on close/lock and
+  no retained application plaintext cache (owner repair request, plan 0057).
 - 2026-11-14: §6.4: where the engine would buffer streamed media to a file
   (WebKitGTK), verified media plays from renderer memory (MSE fragments for
   MP4, otherwise a blob), with a CORS grant to the app's own origin and CSP

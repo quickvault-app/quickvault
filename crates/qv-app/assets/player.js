@@ -6,7 +6,7 @@
 // WebKitGTK buffers playing HTTP media to an unlinked file in /var/tmp, but
 // not media appended through Media Source Extensions or played from a blob.
 // On Linux the viewer gives media a data-qv-src capability instead of src:
-// fetch the verified bytes into memory once, convert an MP4 into fragments for
+// fetch the verified bytes into memory, convert an MP4 into fragments for
 // a MediaSource (WebKit's blob playback cannot play an MP4 whose index is at
 // the end, and its replay after the end sticks), and fall back to a blob URL
 // for other files. Everything is dropped with the preview.
@@ -19,7 +19,7 @@ function dropBlob(media){
     if(held.url)URL.revokeObjectURL(held.url);
     held.wipe();
 }
-function loadBlob(media){
+function loadBlob(media,startPlaying=false,startAt=0){
     dropBlob(media);
     // A reused element must not keep playing the previous file.
     if(media.hasAttribute("src")){media.pause();media.removeAttribute("src");media.load();}
@@ -34,6 +34,12 @@ function loadBlob(media){
             const bytes=new Uint8Array(buffer);
             if(blobs.get(media)!==held||!media.isConnected){bytes.fill(0);return;}
             playFromMemory(media,held,bytes,type);
+            // A seek after EOS uses a new decoder too. Before metadata loads,
+            // currentTime sets its default start position without autoplay.
+            if(startAt>0)media.currentTime=startAt;
+            // Replay is an explicit play request. Source replacement is async:
+            // a close/lock or another load must not restore stale playback.
+            if(startPlaying&&blobs.get(media)===held&&media.isConnected)media.play().catch(()=>{});
         })
         .catch(()=>{if(blobs.get(media)===held)dropBlob(media);});
 }
@@ -373,6 +379,21 @@ function full(type,version,flags,...parts){return box(type,u32(version<<24|flags
 // the media element: play/pause, seek, time, mute and volume. Only playback
 // state is shown; nothing is sent anywhere.
 const wired=new WeakSet();
+// A drag from a control can synthesize a click on the common ancestor of
+// press and release (the viewer's backdrop). Consume that one gesture before
+// Dioxus receives it. Keep no element reference after the preview is removed.
+let playerPress=false;
+document.addEventListener("pointerdown",event=>{
+    playerPress=event.target instanceof Element&&!!event.target.closest(".v-player");
+},{capture:true,passive:true});
+document.addEventListener("pointercancel",()=>{playerPress=false;},{capture:true,passive:true});
+document.addEventListener("click",event=>{
+    const fromPlayer=playerPress;playerPress=false;
+    if(fromPlayer&&event.detail>0&&event.target instanceof Element&&
+        event.target.closest(".viewer")&&!event.target.closest(".v-player")){
+        event.preventDefault();event.stopImmediatePropagation();
+    }
+},true);
 function clock(seconds){
     if(!Number.isFinite(seconds))return "0:00";
     const s=Math.floor(seconds),h=Math.floor(s/3600),m=Math.floor(s/60)%60,r=String(s%60).padStart(2,"0");
@@ -416,6 +437,11 @@ function wirePlayer(player){
     };
     const toggle=()=>{
         if(!ready())return;
+        // WebKitGTK's retained MSE decoder can skip the first GOP on replay
+        // after EOS. Rebuild from the still-live capability rather than seek
+        // that exhausted source or keep a plaintext cache. Ordinary resume
+        // continues using the current source.
+        if(media.ended&&media.hasAttribute("data-qv-src")){loadBlob(media,true);return;}
         if(media.paused||media.ended)media.play().catch(()=>{});else media.pause();
     };
     for(const name of ["play","pause","ended","emptied","loadedmetadata","durationchange","volumechange","seeked","timeupdate"])media.addEventListener(name,state);
@@ -427,7 +453,21 @@ function wirePlayer(player){
         media.addEventListener("dblclick",()=>{clearTimeout(click);player.querySelector(".v-fs")?.click();});
     }
     seek.addEventListener("input",()=>{dragging=true;draw();});
-    seek.addEventListener("change",()=>{dragging=false;if(ready())media.currentTime=Number(seek.value);draw();});
+    seek.addEventListener("change",()=>{
+        dragging=false;
+        if(ready()){
+            // Capture the target before load() resets the control and ended
+            // state. Selecting a frame after EOS must keep the player paused.
+            const position=Math.max(0,Math.min(media.duration,Number(seek.value)));
+            if(Number.isFinite(position)){
+                if(media.ended&&media.hasAttribute("data-qv-src")){
+                    // Selecting the end again must not clear the ended flag.
+                    if(position<media.duration)loadBlob(media,false,position);
+                }else media.currentTime=position;
+            }
+        }
+        draw();
+    });
     mute?.addEventListener("click",()=>{if(media.muted||media.volume===0){media.muted=false;if(media.volume===0)media.volume=1;}else media.muted=true;});
     volume?.addEventListener("input",()=>{media.volume=Number(volume.value);media.muted=media.volume===0;});
     for(const name of ["pointermove","pointerdown","keydown","focusin"])player.addEventListener(name,wake,{passive:true});

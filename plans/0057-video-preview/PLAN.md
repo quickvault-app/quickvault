@@ -2,7 +2,7 @@
 
 | Status | Created | Approved | Specs |
 |--------|---------|----------|-------|
-| In progress — implementation done; full gates and fresh-context review pending | 2026-11-14 | 2026-11-14 (owner bug report and request; design delegated by the owner, standing 2026-11-02) | 0003 §6.4 (amended), 0009 §1.8 (amended) |
+| Implemented — seek after end verified; fresh-context review pending | 2026-11-14 | 2026-11-14 (owner bug report and request; design delegated by the owner, standing 2026-11-02) | 0003 §6.4 (amended), 0009 §1.8 (amended) |
 
 ## Intent
 
@@ -55,7 +55,8 @@ requests (offsets and durations only) was used and removed afterwards.
   unchanged, no dependency or `Cargo.lock` change).
 - Preview streaming reads stop at 64 KiB chunk boundaries (one chunk per read).
 - Video player fills the viewer stage, letterboxed.
-- Opened video previews use `preload="auto"`; audio stays `none`.
+- Opened video previews use `preload="auto"`; Linux memory audio loads on open
+  too, and other platforms use audio metadata preload (step 7's amendment).
 - Spec text for the preload change; media validation flow asserts it.
 - Added after the security finding (owner chose "A", then the app's own
   player, 2026-11-14):
@@ -80,9 +81,9 @@ between range reads (0003 §6.4 forbids a detached key), store API changes.
 
 ## Spec basis
 
-0003 §6.4 required `preload none`. The owner asked for the first frame before
-play (item 5), which is the go-ahead for amending it: an opened video may
-preload; audio still does not. Opening the preview is the explicit action, the
+0003 §6.4 originally required `preload none`. The owner asked for the first frame
+before play (item 5), followed by memory playback and the app's own controls.
+The amendments allow opened media to load without autoplay. Opening the preview is the explicit action, the
 content is already hash-verified and at most 10 MiB (§6.3), and images already
 decode on open. 0009 §1.8 mirrors the rule.
 
@@ -118,10 +119,100 @@ benefit while the listener stays; media keeps the listener for now.
 8. The app's own player controls and in-bar full screen. — done
 9. Media flow drives the controls, asserts MSE for the MP4, replay after the
    end and the full-screen toggle; fixture regenerated. — done
-10. Required gates on the final tree. — pending (owner asked to be consulted
-    before heavy runs while active)
-11. Fresh-context review (preview streaming and renderer plaintext handling
+10. Replay repair and meaningful regression coverage (revision below). — done
+11. Required gates on the final tree. — done
+12. Seek after the end (revision below). — done
+13. Required gates on the updated tree and release rebuild. — done
+14. Fresh-context review (preview streaming and renderer plaintext handling
     are secret-handling code). — pending
+
+## Revisions
+
+- 2026-11-14 (owner continuation, seek after end): the owner confirms normal
+  playback/replay and reports a frozen picture when seeking backward with the
+  slider after EOS. Continue on the owner's staged tree, preserving the index.
+  This extends the approved memory source lifecycle; no new dependency,
+  storage/wire format, detached key or owner decision. The earlier ordinary
+  seek path remains for a source that has not ended.
+
+### Step 12 — Seek from an exhausted source
+
+- [x] **Do:** Amend 0003 §6.4 / 0009 §1.8 to include a backward seek after EOS:
+  rebuild the Linux memory source from the live capability, restore the chosen
+  playback position and keep the paused state. Choosing a position alone must
+  not start playback. Extend the private helper to
+  `loadBlob(media, startPlaying = false, startAt = 0)`; after attaching the
+  fresh source, apply the requested default playback position before play.
+  The slider change handler captures/clamps a finite target in `[0, duration]`
+  before any reset; a backward target on an ended memory source calls the
+  loader with that target. Selecting the end itself leaves EOS untouched;
+  other seeks preserve the existing source/state.
+  Keep identity/connectivity/abort checks before attaching or seeking, and
+  never cache media bytes for this action. If WebKit needs metadata before
+  applying the position, any added listener must be abortable and removed
+  before a stale source can act.
+- **Files:** `crates/qv-app/assets/player.js`, `tests/player.cjs`,
+  `src/bin/media.js`, `tests/fixtures/README.md`, `crates/qv-app/README.md`,
+  specs 0003/0009 and their index, `CHANGELOG.md`, this plan/index.
+- **Done when:** After natural EOS, slider seek to 1 s shows a frame near 1 s
+  while paused; Play advances frames near that position before the 8.33 s
+  keyframe. Repeat after EOS with target 0; replay and ordinary paused/playing
+  seeks still work. A stale/aborted load cannot restore the requested position
+  or play after close/lock. Preserve the existing replay/drag/reset checks.
+- **Verify:** `node --test crates/qv-app/tests/player.cjs`; native media flow
+  serially with/without compositing and `--private-runtime --check-media-files`.
+  Establish failure on the current player before repair; probe the owner's
+  original recording in memory. Run the required gates on the final tree and
+  rebuild the desktop release. Stop to revise the design if restoring the
+  selected position on a fresh source does not recover moving frames.
+
+- 2026-11-14 (owner continuation, replay repair): the owner identified PipeWire
+  as part of the startup fault; normal playback now works, but replay freezes
+  until the second keyframe. The owner also requests that releasing a player
+  control over the backdrop does not close the viewer. Continue this approved
+  plan on the clean tree; no new dependency, public Rust API, storage format,
+  detached key or transport change. Prior speculative diagnoses remain in the
+  execution log as historical evidence, not established causes.
+
+### Step 10 — Replay lifecycle and control gestures
+
+- [x] **Do:** Amend 0003 §6.4 and 0009 §1.8 first: replay on Linux creates a
+  fresh renderer memory source from the still-live authenticated capability;
+  no app-owned plaintext cache is retained for replay. Keep MSE conversion,
+  blob fallback, no autoplay, and close/navigation/hide/lock revocation.
+  On an explicit play at end, call `loadBlob(media, true)`; extend that private
+  JS function with an optional play flag, and request playback only after the
+  fresh source is attached and its ownership/connectivity is rechecked. Ordinary
+  pause/resume and seeking keep their existing source. Late fetch completion
+  after close/lock must wipe its bytes and never attach or play media.
+  Explicitly reset the default playback position after detaching renderer media
+  in `stopMedia`. Verify the existing reset assertions, including zero position.
+  Guard the viewer click produced by a pointer gesture beginning inside
+  `.v-player` and ending outside it: consume that click in capture phase;
+  a new pointerdown or pointer cancellation clears the gesture, keyboard
+  activation remains usable, and a normal backdrop click still closes.
+- **Files:** `crates/qv-app/assets/player.js`, `assets/app.js`, `src/bin/media.js`,
+  `src/validation_media.rs`, `tests/fixtures/preview-long-gop.mp4`,
+  `src/ui/mod.rs` (bounded synthetic frame-count reports),
+  `tests/fixtures/README.md`, focused JS tests under `tests/`,
+  `crates/qv-app/README.md`, `plans/0050-complete-audit-remediation/run-media.py`
+  (repeatable compositing selection and WebKit media-file sampling),
+  specs 0003/0009 and their index, `CHANGELOG.md`, this plan/index.
+- **Done when:** A synthetic H.264 clip with B-frames, AAC, index at the end,
+  and keyframes at 0 and 8.33 s shows moving frames in the first seconds of
+  initial play and two replays. Measure presented frames, not just currentTime.
+  Seeking and pause/resume work. Close/lock during replay cannot resurrect the
+  source. Drag-release on the backdrop keeps the viewer open; an ordinary
+  backdrop click closes it. The owner's recording is read only into memory
+  by local probes, never added to the repository or copied to a plaintext file.
+- **Verify:** `node --test crates/qv-app/tests/player.cjs`; build the validation
+  flow harness and run `run-media.py --private-runtime`, compositing off/on,
+  with an assertion against WebKit media temporary files. Run the new native
+  regression once against the old player to establish that it fails, then
+  against the repair. Probe the owner's recording through the actual repaired
+  player and count frames across two replays. Required final gates remain in
+  step 11; retain complete outputs in temporary logs. Stop for a design revision
+  if source reconstruction does not restore moving frames or persists media.
 
 ## Test plan
 
@@ -130,6 +221,98 @@ benefit while the listener stays; media keeps the listener for now.
 - Required gates on the final tree.
 
 ## Execution log
+
+- 2026-11-14 (seek-after-end final gates, step 13): all required checks pass
+  on the updated tree: SPDX, formatting, workspace Clippy with denied warnings,
+  and `cargo test --locked` (1,040 passed, 0 failed, 7 ignored). Matrix check,
+  validation-feature Clippy and all 11 JS tests also pass. The optimized Linux
+  desktop `quickvault` binary was rebuilt successfully after the final asset
+  edits. Full outputs are retained in `/tmp/qv-seek-investigation/`. No
+  dependencies, Rust APIs or persistent formats changed. The follow-up changes
+  remain unstaged, preserving the owner's existing index. Local inspection
+  found no further issue in this repair; the fresh-context review is now
+  step 14 and remains pending. Test results do not establish security or
+  authorize a release.
+
+- 2026-11-14 (seek-after-end repair, step 12): owner-confirmed playback/replay
+  works; the new report is a slider seek after EOS. The baseline WebKit probe
+  of the owner's recording selected 1 s but presented the 8.4 s frame, followed
+  by four one-second intervals with zero new frames while the clock advanced.
+  A fresh source with its default start position set before metadata restored
+  the frame at 1 s while paused. The actual repaired controls then presented
+  about 29 frames/s starting at that selected position. Original media was
+  read only into memory, never changed or copied to a plaintext test file.
+  Logs: `/tmp/qv-seek-investigation/baseline` and `production`.
+- 2026-11-14 (step 12 validation): the native app flows pass serially with and
+  without compositing, including paused selections at 1 s and 0 after natural
+  EOS, subsequent moving frames, existing replay/drag/close/reset checks, and
+  audio lock/revocation. Both descriptor samplers checked WebKit successfully,
+  with no observed `WebKit-Media-*` file. Eleven JS tests pass, including
+  cancelled/superseded positions, ordinary seeks and the unchanged end-position
+  selection. The new unit cases fail against the previous player. The full
+  native baseline run encountered a separate stage-72 media initialization
+  failure before reaching the new case during a concurrent build; that run is
+  not used as seek-specific regression evidence. No assertions, lock timeout
+  or frame-progress checks were weakened. Existing staged changes are preserved.
+  Logs: `/tmp/qv-seek-investigation/native-after-compositing`,
+  `native-after-software`, `unit-before.log` and `unit-after.log`.
+
+- 2026-11-14 (final verification): native media flows pass serially with and
+  without compositing, through stages 73–77 (drag-release, natural EOS after
+  a seek, replay load, ordinary backdrop close and decoder reset), image
+  checks, and audio lock/revocation. Both runs used `--private-runtime
+  --check-media-files`, with no observed WebKit download file and no unreadable
+  engine descriptor set. Logs: `/tmp/qv-video-investigation/close-stage-compositing`
+  and `close-stage-software`. Earlier concurrent media/build runs had intermittent
+  extended seek/close timeouts; a detached-media snapshot did not locate the
+  failing wait or prove a default-position bug. Added stage markers distinguish
+  those waits; the final serial checks passed without disabling assertions or
+  the inactivity lock. The retained default position is explicitly cleared and
+  covered by a focused test, but is not claimed as the cause of those timeouts.
+- 2026-11-14 (gates): `sh scripts/check-spdx.sh`, `cargo fmt --check`,
+  `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`
+  pass (1,040 passed, 0 failed, 7 ignored). `sh scripts/check-matrix.sh` passes.
+  Also pass: validation-feature Clippy; the seven focused JS tests;
+  `RUST_TEST_THREADS=1 cargo test --locked -p qv-app --features validation --test engine`
+  (3 passed); and the optimized desktop `quickvault` build. Default test inputs
+  are unchanged by the final desktop-only cleanup/validation JS edits:
+  `cargo test --locked --no-run` confirms no recompilation on the final inputs.
+  Logs are under `/tmp/qv-video-investigation/`; no dependency or lockfile change.
+  Local diff/lifecycle inspection is complete; step 12 requires a separate
+  fresh-context reviewer and remains pending. No security proof or release
+  approval is inferred from these checks.
+
+- 2026-11-14 (repair implementation): `loadBlob` accepts an explicit play
+  request, and the play control reconstructs the source only at EOS. The
+  existing capability/read/cleanup path is reused; no original bytes or muxed
+  parts are cached for replay. Late response, replaced request, refused load,
+  ordinary pause/resume, direct-source playback and control-gesture cases have
+  focused JS tests. The synthetic 12 s B-frame/AAC fixture has keyframes at
+  0 and 8.33 s and a trailing index, with documented generation and hash.
+  The old compiled player fails the new native composited test at stage 71,
+  the first sparse-keyframe replay. The repaired production controls presented
+  about 29–30 frames/s on two replays of the owner's recording in memory;
+  the recording was not copied to disk, changed or added to the repository.
+- 2026-11-14 (verification refinements): WebKit's software renderer advertises
+  frame callbacks but does not deliver them, so the native test also samples
+  the presented-frame statistic. Its counters reset asynchronously on resume;
+  increments are accumulated across that reset. Composited checks use actual
+  frame callbacks. No clock-only acceptance was restored. `stopMedia` explicitly
+  clears the default playback position with no source/decoder, and the existing
+  zero-position reset assertion remains in force. The native runner can select
+  compositing and sample WebKit descriptors: its negative control detects an
+  intentionally unlinked synthetic `WebKit-Media-*` file. The sampler checks
+  the known buffering path, not arbitrary disk writes.
+
+- 2026-11-14 (replay investigation): clean tree. In a private PipeWire session,
+  WebKitGTK 2.48.7 reproduced the owner's recording: each replay displayed a
+  frame at about 8.4 s, with zero new frames while currentTime advanced through
+  2.45–5.43 s. A fresh MediaSource built from a new in-memory read presented
+  about 29–30 frames/s over the same interval on two replays. Timestamp-offset
+  changes alone did not fix a synthetic reproduction. This establishes the
+  failing retained decoder/source lifecycle, not a diagnosis of its internal
+  WebKit/GStreamer cause. The owner confirms normal playback after addressing
+  PipeWire; system audio configuration is outside this repair.
 
 - 2026-11-14: Diagnosis above. Per-range timing in dev builds: ~10 ms before,
   ~0.4 ms after step 1. Reported recording, dev build, compositing on:

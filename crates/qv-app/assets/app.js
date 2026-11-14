@@ -18,7 +18,12 @@ function stopMedia(root){
     if(root instanceof Element&&root.matches("audio,video,img"))nodes.push(root);
     if(root.querySelectorAll)nodes.push(...root.querySelectorAll("audio,video,.viewer img"));
     for(const node of nodes){
-        if(node instanceof HTMLMediaElement){dropBlob(node);node.pause();node.removeAttribute("src");node.load();}
+        if(node instanceof HTMLMediaElement){
+            dropBlob(node);node.pause();node.removeAttribute("src");node.load();
+            // Explicitly clear the default playback position too, after
+            // detaching the source and resetting the decoder.
+            if(node.readyState===0)node.currentTime=0;
+        }
         else if(node instanceof HTMLImageElement)node.removeAttribute("src");
     }
 }

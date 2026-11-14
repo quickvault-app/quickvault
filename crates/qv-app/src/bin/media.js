@@ -11,8 +11,48 @@ const reset=media=>media.paused&&!media.hasAttribute("src")&&media.readyState===
 const refused=async url=>{const late=new Audio();late.muted=true;late.preload="auto";late.src=url;late.load();try{await wait(()=>!!late.error);}finally{late.removeAttribute("src");late.load();}};
 // The player's own controls are ready once the media has its metadata (player.js).
 const ready=media=>wait(()=>media.closest(".v-player")?.hasAttribute("data-qv-ready"));
-const press=(media,selector)=>media.closest(".v-player").querySelector(selector).click();
+const point=control=>control.dispatchEvent(new PointerEvent("pointermove",{bubbles:true,pointerType:"mouse"}));
+const press=(media,selector)=>{const control=media.closest(".v-player").querySelector(selector);point(control);control.click();};
 const playing=media=>media.closest(".v-player").getAttribute("data-state")==="playing";
+// A running clock does not establish that the decoder presents frames. Count
+// new presented frames near the start, before the next keyframe at 8.33 s.
+const moving=async media=>{
+ await wait(()=>!media.paused&&media.currentTime>0.1&&media.currentTime<4);
+ const start=media.currentTime;let frames=0,callback=0,last=-1;
+ const frame=(_now,meta)=>{if(meta.mediaTime>last){last=meta.mediaTime;frames++;}callback=media.requestVideoFrameCallback(frame);};
+ const presented=()=>{const q=media.getVideoPlaybackQuality();return q.totalVideoFrames-q.droppedVideoFrames;};
+ // The software path can reset its statistics asynchronously on resume.
+ // Accumulate actual frame increments across resets, not a single subtraction
+ // spanning two decoder counter lifetimes. A frozen decoder adds no frames.
+ let previous=presented(),rendered=0,resets=0;
+ const sample=()=>{const next=presented();if(next<previous){resets++;rendered+=next;}else rendered+=next-previous;previous=next;};
+ const sampling=setInterval(sample,50);
+ if(media.requestVideoFrameCallback)callback=media.requestVideoFrameCallback(frame);
+ try{
+  await new Promise(r=>setTimeout(r,1200));
+  // WebKit's non-composited path exposes the callback API without delivering
+  // callbacks; its presented-frame counter still advances. Neither is a clock.
+  sample();const shown=frames||rendered;
+  const result=document.getElementById("validation-result");
+  if(result){result.value="MEDIA-FRAMES:"+[frames,rendered,resets,Math.round(start*1000),Math.round(media.currentTime*1000)].join(",");result.dispatchEvent(new Event("input",{bubbles:true}));}
+  if(shown<6||media.currentTime<=start+0.5||media.currentTime>=4)throw new Error("video frames stalled");
+ }finally{clearInterval(sampling);if(callback)media.cancelVideoFrameCallback(callback);}
+};
+// Check the frame chosen by a paused seek, including a seek after EOS. The
+// composited engine reports its presented timestamp; software readiness still
+// requires a decoded frame. Subsequent Play is checked by moving() too.
+const select=async(media,position)=>{
+ let shown=null,callback=0;
+ const frame=(_now,meta)=>{shown=meta.mediaTime;callback=media.requestVideoFrameCallback(frame);};
+ if(media.requestVideoFrameCallback)callback=media.requestVideoFrameCallback(frame);
+ try{
+  const slider=media.closest(".v-player").querySelector(".v-seek");point(slider);slider.value=String(position);
+  slider.dispatchEvent(new Event("input",{bubbles:true}));slider.dispatchEvent(new Event("change",{bubbles:true}));
+  await wait(()=>media.readyState>=2&&!media.seeking&&Math.abs(media.currentTime-position)<0.25);
+  await new Promise(r=>setTimeout(r,300));
+  if(!media.paused||(shown!==null&&Math.abs(shown-position)>0.25))throw new Error("paused seek frame");
+ }finally{if(callback)media.cancelVideoFrameCallback(callback);}
+};
 let stage=1,passed=false,lastMedia=null;
 const mark=n=>{stage=n;const result=document.getElementById("validation-result");if(result){result.value=`MEDIA-STAGE:${n}`;result.dispatchEvent(new Event("input",{bubbles:true}));}};
 try{
@@ -41,13 +81,49 @@ try{
  mark(6);video.currentTime=2;await wait(()=>!video.seeking&&video.currentTime>2.2);
  // Play again after the end starts over and advances (plan 0057).
  await wait(()=>video.ended&&!playing(video));press(video,".v-play");
- await wait(()=>!video.paused&&video.currentTime>0.3&&video.currentTime<3);
+ await moving(video);
  // Full screen is the player's own control (desktop).
  if(document.getElementById("viewer-full")){
   await tap("viewer-full");await wait(()=>!!document.querySelector(".viewer.full"));
   await tap("viewer-full");await wait(()=>!document.querySelector(".viewer.full"));
  }
  mark(7);await tap("viewer-close");await wait(()=>reset(video));
+ // Sparse keyframes plus B-frames reproduce the EOS replay fault hidden by
+ // the original fixture's one-second keyframe interval. Never use user data.
+ mark(70);await open("e-long-gop.mp4");await wait(()=>!!document.querySelector(".viewer video"));
+ const sparse=document.querySelector(".viewer video");lastMedia=sparse;await ready(sparse);sparse.muted=true;
+ press(sparse,".v-play");await moving(sparse);
+ for(let replay=0;replay<2;replay++){
+  await wait(()=>sparse.ended&&!playing(sparse));mark(71+replay);
+  press(sparse,".v-play");await moving(sparse);
+ }
+ // Pause/resume and a seek inside the first GOP still present frames.
+ press(sparse,".v-play");await wait(()=>sparse.paused);
+ press(sparse,".v-play");await moving(sparse);
+ sparse.currentTime=1;await wait(()=>!sparse.seeking);await moving(sparse);
+ // A control press released on the backdrop produces a retargeted click.
+ // It must be consumed before the native close handler sees it.
+ mark(73);const control=sparse.closest(".v-player").querySelector(".v-seek");
+ const backdrop=sparse.closest(".viewer").querySelector(".v-stage");
+ control.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerId:1}));
+ backdrop.dispatchEvent(new PointerEvent("pointerup",{bubbles:true,pointerId:1}));
+ backdrop.dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true,detail:1}));
+ await new Promise(r=>setTimeout(r,100));
+ if(!sparse.isConnected||!document.querySelector(".viewer"))throw new Error("control drag closed viewer");
+ // Close a pending replay by an ordinary background click.
+ mark(74);sparse.currentTime=sparse.duration-0.2;await wait(()=>sparse.ended);
+ // The slider must recover an exhausted source too, keeping the selected
+ // frame paused until Play. Check both a nonzero target and the start.
+ for(const position of [1,0]){
+  mark(78+position);await select(sparse,position);press(sparse,".v-play");await moving(sparse);
+  await wait(()=>sparse.ended&&!playing(sparse));
+ }
+ mark(75);press(sparse,".v-play");
+ backdrop.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerId:2}));
+ backdrop.dispatchEvent(new PointerEvent("pointerup",{bubbles:true,pointerId:2}));
+ backdrop.dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true,detail:1}));
+ mark(76);await wait(()=>reset(sparse));mark(77);await new Promise(r=>setTimeout(r,300));
+ if(!reset(sparse))throw new Error("late replay after close");
  mark(8);await open("c-image.png");await wait(()=>!!document.querySelector(".viewer img"));
  await wait(()=>document.querySelector(".viewer img").naturalWidth===64);
  await tap("viewer-close");await wait(()=>!document.querySelector(".viewer"));

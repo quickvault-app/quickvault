@@ -311,7 +311,11 @@ release, but no longer gates the feature.
   separate edit websocket policy. On Linux, media plays from renderer memory
   instead (0003 §6.4), so the CSP also allows `blob:` media and a fetch from
   that listener. No autoplay; an opened preview may load its media before play
-  to show the first frame and duration (0003 §6.4). Large or
+  to show the first frame and duration (0003 §6.4). Explicit replay after the
+  end uses a fresh memory source on Linux (0003 §6.4), as does a backward seek
+  after the end; seeking restores the chosen position while paused. A pointer
+  gesture beginning on the player must not close the viewer when released over the
+  backdrop; an ordinary backdrop click still closes it. Large or
   unmeasured image decodes use a size/dimension explanation and explicit Load
   image action rather than silently consuming a large allocation. Framework,
   kernel, media-engine and GPU copies retain 0008's best-effort limits.
@@ -565,6 +569,11 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
 
 ## Changelog
 
+- 2026-11-14: §1.8: backward seek after EOS uses a fresh memory source on
+  Linux and preserves the paused state and selected position (owner, 0057).
+- 2026-11-14: §1.8: Linux replay reconstructs its memory source; releasing a
+  player-control gesture over the backdrop keeps the viewer open (owner bug
+  reports, plan 0057).
 - 2026-11-14: §1.8: the viewer has the app's own media player (window full
   screen for video on desktop); Linux plays media from memory (0003 §6.4);
   opened audio may load before play (owner request, plan 0057). Still Draft.

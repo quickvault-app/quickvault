@@ -24,12 +24,40 @@ def rss_tree(pid, seen=None):
     return [(pid, rss)] + [row for child in children for row in rss_tree(int(child), seen)]
 
 
+def media_files(pid):
+    """Sample WebKit descriptors, including unlinked download buffers.
+
+    No file contents or targets are logged. This catches the known GTK
+    download-buffer path; it is not a general proof of absence of disk writes.
+    """
+    try:
+        if not Path(f"/proc/{pid}/comm").read_text().startswith("WebKit"):
+            return False, False
+        found = False
+        with os.scandir(f"/proc/{pid}/fd") as descriptors:
+            for index, descriptor in enumerate(descriptors):
+                if index >= 4096:
+                    raise RuntimeError("WebKit descriptor sampling limit")
+                try:
+                    target = os.readlink(descriptor.path)
+                except FileNotFoundError:
+                    continue
+                found |= "WebKit-Media-" in target
+        return True, found
+    except (FileNotFoundError, ProcessLookupError):
+        return False, False
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--private-runtime", action="store_true",
                         help="provide a private D-Bus/PipeWire session and null audio sink")
+    parser.add_argument("--compositing", action="store_true",
+                        help="enable WebKit compositing as in a desktop session")
+    parser.add_argument("--check-media-files", action="store_true",
+                        help="fail on observed WebKit-Media download files, including unlinked files")
     args = parser.parse_args()
     args.output.mkdir(mode=0o700, parents=True, exist_ok=True)
     binary = args.binary.resolve()
@@ -49,7 +77,8 @@ def main():
                 if not number.isdecimal():
                     raise RuntimeError("private display startup failed; inspect xvfb.log")
                 env = dict(os.environ, DISPLAY=":" + number,
-                           WEBKIT_DISABLE_COMPOSITING_MODE="1", QV_TEST_MEDIA_FLOW="1")
+                           WEBKIT_DISABLE_COMPOSITING_MODE="0" if args.compositing else "1",
+                           QV_TEST_MEDIA_FLOW="1")
                 if args.private_runtime:
                     for name, variable in [("runtime", "XDG_RUNTIME_DIR"),
                                            ("state", "XDG_STATE_HOME"),
@@ -93,9 +122,18 @@ def main():
                 app = subprocess.Popen([str(binary)], cwd=working, env=env,
                                        stdout=log, stderr=log, start_new_session=True)
                 start, peak = time.monotonic(), 0
+                checked_webkit, found_media, unreadable = False, False, False
                 with (args.output / "rss.log").open("w") as stats:
                     while app.poll() is None and time.monotonic() - start < 180:
                         rows = rss_tree(app.pid)
+                        if args.check_media_files:
+                            for pid, _ in rows:
+                                try:
+                                    checked, found = media_files(pid)
+                                    checked_webkit |= checked
+                                    found_media |= found
+                                except (PermissionError, RuntimeError):
+                                    unreadable = True
                         total = sum(rss for _, rss in rows)
                         peak = max(peak, total)
                         stats.write(f"{time.monotonic()-start:.1f}s total_kib={total} processes={rows}\n")
@@ -107,6 +145,11 @@ def main():
                     code = 124
                 else:
                     code = app.returncode
+                if args.check_media_files:
+                    print(f"WebKit media-file sampling: checked={checked_webkit} "
+                          f"found={found_media} unreadable={unreadable}", flush=True)
+                    if not checked_webkit or found_media or unreadable:
+                        code = code or 1
                 print(f"native media exit={code}; peak summed process RSS={peak} KiB", flush=True)
                 return code
             finally:

@@ -10,6 +10,14 @@ rows of 0012) is not planned (owner, 2026-11-14). Those sections stay as
 design records with unchanged statuses; QuickVault 1.0 is offline plus
 direct LAN sync.
 
+Plan 0057's replay repair (2026-11-14, owner continuation) clarifies 0003 §6.4
+and 0009 §1.8: explicit replay reconstructs Linux's memory playback source
+through the still-live authenticated route, with close/lock cancellation;
+releasing a player-control gesture over the backdrop does not close the viewer.
+The owner's seek-after-end follow-up uses the same source reconstruction while
+preserving the chosen position and paused state.
+Whole-spec statuses are unchanged.
+
 Plan 0053 (2026-11-13, owner-delegated) amends 0004 §7.2/§7.3 and 0008
 §2/§6 for performance: unlock verification feeds the index, text-free match
 sets and a separately evicted label tier speed up paged views. No format,

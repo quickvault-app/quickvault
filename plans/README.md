@@ -95,4 +95,4 @@ plan, or a new plan that names the one it supersedes.
 | [0054](0054-selection-motion-type-tiles/PLAN.md) | Selection motion, type tiles, quieter file cards, stable selection rows, new logo (owner request) | Implemented — fresh review and owner acceptance pending |
 | [0055](0055-wayland-clipboard/PLAN.md) | Clipboard on Wayland: GTK in the app, data-control in the CLI (owner bug report) | Reviewed — approved 2026-11-14; owner Wayland check pending (0056 step 5) |
 | [0056](0056-release-1-0/PLAN.md) | Release 1.0: readiness checklist, cleanup, fast tests, focused reviews (owner request) | In progress — agent work done; owner actions and gated steps open |
-| [0057](0057-video-preview/PLAN.md) | Video preview: playback stalls, player size, first frame before play (owner bug report) | In progress — own player, Linux memory playback (MSE) done; gates and review pending |
+| [0057](0057-video-preview/PLAN.md) | Video preview: playback stalls, player size, first frame before play (owner bug report) | Implemented — seek after end verified; fresh-context review pending |

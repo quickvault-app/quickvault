@@ -949,6 +949,18 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Fixed
 
+- 2026-11-14: Linux video previews also recover when the slider is moved
+  backward after the video ends. The fresh memory source restores the selected
+  frame while paused, and Play resumes from there. Regression checks cover
+  selecting both an earlier position and the beginning after EOS (plan 0057).
+- 2026-11-14: Linux video replay now builds a fresh memory playback source
+  through the still-live authenticated preview route. Reusing WebKitGTK's
+  exhausted MSE source could freeze the picture until the next keyframe
+  (about eight seconds in the reported recording). No plaintext replay cache
+  is retained. Regression checks count video frames on a synthetic B-frame
+  recording with widely spaced keyframes, and cover late replay-load
+  cancellation. Releasing a player-control drag over the backdrop also keeps
+  the viewer open; ordinary backdrop clicks still close it (plan 0057).
 - 2026-11-14: Security (Linux, plan 0057): previewed audio and video no
   longer reach the disk. WebKitGTK buffered playing media to an unlinked file
   in `/var/tmp` (since plan 0050, against 0003 §6.4). Verified media is now
@@ -956,9 +968,9 @@ Dates are ISO 8601. Newest first within each section.
   Extensions fragments rewritten losslessly from their own sample tables,
   other files as a blob. The listener grants CORS to the app's own origin for
   that fetch; the Linux CSP allows `blob:` media and that fetch. This also
-  plays MP4s whose index is at the end (OBS's default) and fixes play again
-  after the end. Known WebKitGTK limit: replay still fails for a B-frame video
-  with a single keyframe (a short clip); the test clip now has one per second.
+  plays MP4s whose index is at the end (OBS's default). The subsequent replay
+  repair above addresses the retained-source fault; the earlier clock-only
+  replay check did not establish that moving frames were shown.
 - 2026-11-14: The viewer has its own media player (plan 0057, 0009 §1.8):
   play/pause, seek, time, mute and volume, with Space/K, M and F keys; for
   video, a full-screen button in the control bar (the window goes full

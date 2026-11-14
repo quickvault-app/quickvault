@@ -107,6 +107,15 @@ fn fixture_report(controller: &Controller) -> impl FnMut(FormEvent) + 'static {
             return;
         }
         if crate::validation_media::enabled()
+            && let Some(frames) = value.strip_prefix("MEDIA-FRAMES:")
+            && frames.len() <= 54
+            && frames.split(',').count() == 5
+            && frames.split(',').all(|n| n.parse::<u32>().is_ok())
+        {
+            println!("synthetic media frames {frames}");
+            return;
+        }
+        if crate::validation_media::enabled()
             && let Some(facts) = value.strip_prefix("MEDIA-FACTS:")
             && facts.len() == 11
             && facts.split(',').count() == 6

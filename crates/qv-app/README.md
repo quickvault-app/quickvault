@@ -212,6 +212,23 @@ These tests require Xvfb (`QV_TEST_XVFB` can select its executable). They start
 private X servers and use synthetic values. No graphical display is required by
 default workspace tests.
 
+Player replay/cancellation and control-gesture tests (public synthetic values)
+also run with `node --test crates/qv-app/tests/player.cjs`. For native media
+playback, including sparse-keyframe replay and slider seeks after the end,
+build and run:
+
+```sh
+cargo build --locked -p qv-app --features validation --bin qv-flow-harness
+python3 plans/0050-complete-audit-remediation/run-media.py \
+  --binary target/debug/qv-flow-harness --private-runtime --check-media-files \
+  --compositing --output /tmp/qv-media-validation
+```
+
+Repeat without `--compositing` for WebKit's software rendering path. The private
+PipeWire session avoids depending on the desktop audio configuration. The
+optional descriptor sampler checks for the known WebKitGTK media download
+files, including unlinked ones; it does not establish absence of all disk writes.
+
 The logo comes from the repository's `docs/logo/logo.svg`, with
 `docs/logo/logo-small.svg` as its cut for 32 px and below (`docs/logo/logo.png`
 is a 2048 px render): `assets/icon-256.png` (desktop window icon,
