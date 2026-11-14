@@ -1261,11 +1261,40 @@ pub(crate) fn Viewer(
     use crate::preview::Kind;
     let mut actual = use_signal(|| false);
     let mut wrap = use_signal(|| true);
+    // Window full screen for video: WebKitGTK's native video full screen
+    // draws black, so it is disabled and the whole window goes full screen
+    // instead (plan 0057). Leaving the viewer always restores the window.
+    let mut full = use_signal(|| false);
+    #[cfg(not(target_os = "android"))]
+    let window = dioxus_desktop::use_window();
+    let set_full = use_callback({
+        #[cfg(not(target_os = "android"))]
+        let window = window.clone();
+        move |on: bool| {
+            #[cfg(not(target_os = "android"))]
+            window.set_fullscreen(on);
+            full.set(on);
+        }
+    });
+    #[cfg(not(target_os = "android"))]
+    use_drop({
+        let window = window.clone();
+        move || {
+            if full() {
+                window.set_fullscreen(false);
+            }
+        }
+    });
     let p = preview;
     let many = p.count > 1;
     let keys = {
         let c = controller.clone();
         move |e: KeyboardEvent| match e.key() {
+            Key::Escape if full() => {
+                e.stop_propagation();
+                e.prevent_default();
+                set_full.call(false);
+            }
             Key::Escape => {
                 e.stop_propagation();
                 e.prevent_default();
@@ -1326,10 +1355,41 @@ pub(crate) fn Viewer(
             c.act(epoch, WsAction::PreviewStep(d));
         }
     };
+    // The player's own controls (plan 0057); player.js wires them to the
+    // media element. Full screen (video, desktop) is the window's. Arrow keys
+    // move the sliders, not to the next file.
+    let controls = move |video: bool| {
+        rsx! {
+            div { class: "v-ctl",
+                onkeydown: move |e: KeyboardEvent| {
+                    if matches!(e.key(), Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End | Key::PageUp | Key::PageDown) {
+                        e.stop_propagation();
+                    }
+                },
+                button { class: "v-cb v-play", r#type: "button", "aria-label": "Play", title: "Play (Space)",
+                    span { class: "i-play", Svg { icon: Icon::Play } } span { class: "i-pause", Svg { icon: Icon::Pause } }
+                }
+                input { class: "v-seek", r#type: "range", min: "0", max: "1", step: "any", value: "0", "aria-label": "Seek" }
+                span { class: "v-time" }
+                button { class: "v-cb v-mute", r#type: "button", "aria-label": "Mute", title: "Mute (M)",
+                    span { class: "i-loud", Svg { icon: Icon::Volume } } span { class: "i-quiet", Svg { icon: Icon::Muted } }
+                }
+                input { class: "v-volume", r#type: "range", min: "0", max: "1", step: "any", value: "1", "aria-label": "Volume" }
+                if video && cfg!(not(target_os = "android")) {
+                    button { class: "v-cb v-fs", id: "viewer-full", r#type: "button",
+                        "aria-label": if full() { "Exit full screen" } else { "Full screen" },
+                        title: if full() { "Exit full screen (F)" } else { "Full screen (F)" },
+                        onclick: move |e: MouseEvent| { e.stop_propagation(); set_full.call(!full()) },
+                        Svg { icon: if full() { Icon::Shrink } else { Icon::Expand } }
+                    }
+                }
+            }
+        }
+    };
     rsx! {
         // A click anywhere on the dark backdrop (title strip, stage, footer)
         // closes the preview; the content and the controls keep their clicks.
-        div { class: "viewer tone-{tone}", role: "dialog", "aria-modal": "true", "aria-label": "Preview of {p.name.as_str()}", tabindex: "-1", autofocus: true, onkeydown: keys,
+        div { class: if full() { "viewer full tone-{tone}" } else { "viewer tone-{tone}" }, role: "dialog", "aria-modal": "true", "aria-label": "Preview of {p.name.as_str()}", tabindex: "-1", autofocus: true, onkeydown: keys,
             onclick: act(&controller, epoch, WsAction::ClosePreview),
             div { class: "v-top",
                 span { class: "v-badge", Svg { icon: file_icon(&p.name, p.mime) } }
@@ -1368,11 +1428,29 @@ pub(crate) fn Viewer(
                             div { class: "v-disc", div { class: "v-disc-label", Svg { icon: Icon::File, large: true } } }
                             div { class: "v-eq", "aria-hidden": "true", for _ in 0..24 { i {} } }
                             b { class: "v-track", "{p.name.as_str()}" }
-                            audio { src: "{src.as_str()}", controls: true, preload: "none" }
+                            div { class: "v-player",
+                                // WebKitGTK buffers playing HTTP media to /var/tmp, so on
+                                // Linux player.js plays it from memory (plan 0057).
+                                if cfg!(target_os = "linux") {
+                                    audio { "data-qv-src": "{src.as_str()}", "data-qv-type": p.mime, preload: "auto" }
+                                } else {
+                                    audio { src: "{src.as_str()}", preload: "metadata" }
+                                }
+                                {controls(false)}
+                            }
                         }
                     },
                     (Kind::Video, Some(src), _) => rsx! {
-                        div { class: "v-video", onclick: |e: MouseEvent| e.stop_propagation(), video { src: "{src.as_str()}", controls: true, preload: "none", "playsinline": "true" } }
+                        div { class: "v-video", onclick: |e: MouseEvent| e.stop_propagation(),
+                            div { class: "v-player",
+                                if cfg!(target_os = "linux") {
+                                    video { "data-qv-src": "{src.as_str()}", "data-qv-type": p.mime, preload: "auto", "playsinline": "true" }
+                                } else {
+                                    video { src: "{src.as_str()}", preload: "auto", "playsinline": "true" }
+                                }
+                                {controls(true)}
+                            }
+                        }
                     },
                     (Kind::Text, _, Some(text)) => rsx! {
                         div { class: "v-text", onclick: |e: MouseEvent| e.stop_propagation(),

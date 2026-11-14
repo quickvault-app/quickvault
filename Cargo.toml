@@ -56,6 +56,27 @@ opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
 
+# Unoptimized, an attachment chunk (SHA-256 + XChaCha20-Poly1305 + zeroize)
+# takes ~10 ms to open instead of ~0.2 ms, so dev-build media previews stream
+# too slowly for WebKit to play (plan 0057). Optimize those crates in dev only.
+[profile.dev.package.qv-crypto]
+opt-level = 3
+
+[profile.dev.package.chacha20]
+opt-level = 3
+
+[profile.dev.package.poly1305]
+opt-level = 3
+
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.zeroize]
+opt-level = 3
+
 # Tests run optimized: unoptimized, the stock-budget large-vault test alone
 # took over 20 minutes and CI test jobs over an hour. Debug assertions and
 # overflow checks stay on (inherited from dev).

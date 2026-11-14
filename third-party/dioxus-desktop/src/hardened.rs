@@ -123,7 +123,15 @@ pub fn csp(edits: &str) -> String {
         .filter(|port| port.parse::<u16>().is_ok_and(|n| n != 0))
         .map(|port| format!(" http://127.0.0.1:{port}"))
         .unwrap_or_default();
-    format!("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'{media}; media-src 'self'{media}; font-src 'self'; connect-src 'self' {endpoint}; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'")
+    // WebKitGTK buffers playing HTTP media to a file in /var/tmp, but not blob
+    // media: there the page fetches verified media from the listener and plays
+    // it from a blob URL (QuickVault plan 0057). Nowhere else.
+    let (fetch, blob) = if cfg!(target_os = "linux") && !media.is_empty() {
+        (media.as_str(), " blob:")
+    } else {
+        ("", "")
+    };
+    format!("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'{media}; media-src 'self'{media}{blob}; font-src 'self'; connect-src 'self' {endpoint}{fetch}; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'")
 }
 
 // Reject duplicate object keys at every level instead of silently taking the last.
@@ -297,6 +305,20 @@ mod tests {
                 && !policy.contains("data:")
                 && !policy.contains("blob:")
         );
+        // With the listener: its origin for images/media, plus blob media and
+        // a fetch grant on Linux only. Scripts and images never get blob:.
+        let policy = csp("ws://127.0.0.1:4321/edits");
+        assert!(policy.contains("img-src 'self' http://127.0.0.1:4321;"));
+        assert!(policy.contains("script-src 'self';") && !policy.contains("data:"));
+        if cfg!(target_os = "linux") {
+            assert!(policy.contains("media-src 'self' http://127.0.0.1:4321 blob:;"));
+            assert!(policy.contains("connect-src 'self' ws://127.0.0.1:4321 http://127.0.0.1:4321;"));
+            assert_eq!(policy.matches("blob:").count(), 1);
+        } else {
+            assert!(policy.contains("media-src 'self' http://127.0.0.1:4321;"));
+            assert!(policy.contains("connect-src 'self' ws://127.0.0.1:4321;"));
+            assert!(!policy.contains("blob:"));
+        }
     }
     #[test]
     fn hardened_events_are_an_allow_list() {

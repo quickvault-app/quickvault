@@ -74,10 +74,23 @@ pub fn sniff(b: &[u8]) -> (Kind, &'static str) {
         return (Kind::Audio, "audio/mpeg");
     }
     if at(4, b"ftyp") {
-        // MP4 family: audio-only brands are audio, the rest video.
+        // MP4 family: audio-only brands are audio; video when the major or a
+        // compatible brand (box: size, "ftyp", major, minor, brands) is MP4.
+        // QuickTime stays refused even if it lists an MP4 brand.
+        let mp4 = |brand: &[u8]| {
+            matches!(
+                brand,
+                b"isom" | b"mp41" | b"mp42" | b"avc1" | b"M4V " | b"dash"
+            ) || (brand.starts_with(b"iso") && matches!(brand[3], b'2'..=b'9'))
+        };
+        let size =
+            (b[0] as usize) << 24 | (b[1] as usize) << 16 | (b[2] as usize) << 8 | b[3] as usize;
+        let end = size.min(b.len()).min(128);
+        let compatible = b.get(16..end).unwrap_or_default().as_chunks::<4>().0;
         return match b.get(8..12) {
             Some(b"M4A " | b"M4B ") => (Kind::Audio, "audio/mp4"),
-            Some(b"isom" | b"iso2" | b"mp41" | b"mp42" | b"avc1" | b"M4V " | b"dash") => {
+            Some(b"qt  ") => (Kind::Unsupported, "application/octet-stream"),
+            Some(major) if mp4(major) || compatible.iter().any(|c| mp4(c)) => {
                 (Kind::Video, "video/mp4")
             }
             _ => (Kind::Unsupported, "application/octet-stream"),
@@ -338,7 +351,10 @@ impl Source {
                 return Err(unavailable());
             }
             let session = self.session.upgrade().ok_or_else(unavailable)?;
-            let count = (end - at).min(RANGE_MAX as u64) as usize;
+            // Stop at the next 64 KiB boundary (the stored chunk size), so each
+            // read opens one chunk rather than two after an unaligned start.
+            let boundary = RANGE_MAX as u64 - at % RANGE_MAX as u64;
+            let count = (end - at).min(boundary) as usize;
             let bytes = session
                 .attachment_range(self.handle, at, count, None)
                 .map_err(|_| unavailable())?;
@@ -607,6 +623,18 @@ mod tests {
             (b"\xff\xfb\x90\x00", Kind::Audio, "audio/mpeg"),
             (b"\0\0\0\x20ftypM4A \0\0", Kind::Audio, "audio/mp4"),
             (b"\0\0\0\x20ftypisom\0\0", Kind::Video, "video/mp4"),
+            // OBS: major brand iso4.
+            (
+                b"\0\0\0\x28ftypiso4\0\0\0\0iso4isomobs1iso2avc1mp41",
+                Kind::Video,
+                "video/mp4",
+            ),
+            // An unlisted major brand with an MP4 compatible brand.
+            (
+                b"\0\0\0\x18ftypXAVC\0\0\0\0XAVCmp42",
+                Kind::Video,
+                "video/mp4",
+            ),
             (b"\x1a\x45\xdf\xa3....", Kind::Video, "video/webm"),
             (b"hello\nworld", Kind::Text, "text/plain; charset=utf-8"),
             (
@@ -627,6 +655,9 @@ mod tests {
         for refused in [
             &b"%PDF-1.7\n%\xe2\xe3\xcf\xd3"[..],
             b"\0\0\0\x20ftypqt  ",
+            b"\0\0\0\x18ftypqt  \0\0\0\0qt  isom",
+            // A compatible brand past the box size does not count.
+            b"\0\0\0\x14ftyp3gp4\0\0\0\x003gp4isom",
             b"PK\x03\x04....",
             b"\x89PNG",
             b"RIFF\0\0\0\0AVI ",
@@ -724,6 +755,12 @@ mod tests {
         let mut out = Vec::new();
         active_source.stream(65535, 65539, &mut out).unwrap();
         assert_eq!(out, bytes[65535..131074]);
+        // Chunk-aligned pieces still reproduce an unaligned range to the end.
+        let mut out = Vec::new();
+        active_source
+            .stream(3, bytes.len() as u64 - 3, &mut out)
+            .unwrap();
+        assert_eq!(out, bytes[3..]);
         assert!(active_source.stream(u64::MAX, 2, &mut Vec::new()).is_err());
         close();
         assert!(!active() && source(&path).is_none());

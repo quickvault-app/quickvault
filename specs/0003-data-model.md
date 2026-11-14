@@ -166,7 +166,20 @@ strict Host/origin/range checks, bounded headers/connections and exact CSP origi
 Do not reuse the edit transport's secret in media URLs. Responses are no-store;
 the adapter writes protected chunks directly rather than making plaintext Vec
 response copies. Malformed/multiple/unsatisfiable ranges fail416 without a full
-content fallback. Media is on demand, with no autoplay and preload none.
+content fallback. Where the platform media engine would buffer streamed media
+to a file (WebKitGTK on Linux writes playing HTTP media to an unlinked file in
+`/var/tmp`), the client instead fetches the verified content once over that
+route into renderer memory and plays it from there (owner request,
+2026-11-14): an MP4 as Media Source Extensions fragments rewritten losslessly
+from its own sample tables (no re-encoding), anything else as an in-memory blob.
+For that fetch the listener grants CORS to the app's own origin only, and the
+CSP adds `blob:` to media-src and the listener origin to connect-src. The
+renderer's copies are dropped on close, navigation, lock and hiding, and
+overwritten after use where the page holds them; engine copies keep 0008's
+best-effort limits. Media is on demand, with no autoplay. An opened audio or
+video preview may load before play (owner request, 2026-11-14) so its first
+frame and duration show: opening it is the explicit action, and the content is
+already verified and bounded by §6.3.
 
 Before automatic image decoding, inspect bounded PNG/JPEG/GIF/WebP dimension
 headers. If the RGBA lower-bound size exceeds64 MiB or the dimensions cannot be
@@ -216,6 +229,13 @@ searchable. Paging MUST NOT silently omit records, fields or conflicts.
 
 ## Changelog
 
+- 2026-11-14: §6.4: where the engine would buffer streamed media to a file
+  (WebKitGTK), verified media plays from renderer memory (MSE fragments for
+  MP4, otherwise a blob), with a CORS grant to the app's own origin and CSP
+  `blob:`/connect-src for it; opened audio may load before play too (owner
+  request, plan 0057).
+- 2026-11-14: §6.4: an opened video preview may preload so its first frame
+  shows before play; audio still preloads nothing (owner request, plan 0057).
 - 2026-11-11: §5.1: standard hints include `wifi`; every other hint shows
   as one Other type instead of `custom` (owner request, plan 0051).
 - 2026-11-09: Specify bounded verified preview streams and explicit expensive

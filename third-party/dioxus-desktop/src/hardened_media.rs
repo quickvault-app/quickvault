@@ -37,6 +37,9 @@ struct Request<'a> {
     head: bool,
     range: Option<&'a str>,
     invalid_range: bool,
+    /// The app's own accepted origin, echoed as the only CORS grant so the
+    /// bundled page can read verified media into a blob (QuickVault plan 0057).
+    origin: Option<&'a str>,
 }
 fn request(bytes: &[u8], port: u16) -> Option<Request<'_>> {
     if !bytes.is_ascii() || bytes.len() > 8192 {
@@ -66,6 +69,7 @@ fn request(bytes: &[u8], port: u16) -> Option<Request<'_>> {
     let mut host = None;
     let mut range = None;
     let mut invalid_range = false;
+    let mut allowed_origin = None;
     for (index, line) in lines.enumerate() {
         if index == 64 {
             return None;
@@ -90,6 +94,7 @@ fn request(bytes: &[u8], port: u16) -> Option<Request<'_>> {
             "host" => host = Some(value),
             "range" => range = Some(value),
             "origin" if !origin(value) => return None,
+            "origin" => allowed_origin = Some(value),
             "content-length" if value != "0" => return None,
             "transfer-encoding" => return None,
             _ => {}
@@ -103,6 +108,7 @@ fn request(bytes: &[u8], port: u16) -> Option<Request<'_>> {
         head: method == "HEAD",
         range,
         invalid_range,
+        origin: allowed_origin,
     })
 }
 fn origin(value: &str) -> bool {
@@ -153,7 +159,11 @@ pub(crate) fn serve(stream: &mut TcpStream, bytes: &[u8], port: u16, provider: O
         } else {
             String::new()
         };
-        write!(stream, "HTTP/1.1 {status} OK\r\nContent-Length: {length}\r\nContent-Type: {}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nPragma: no-cache\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\n{range}\r\n", served.mime)?;
+        let cors = request
+            .origin
+            .map(|o| format!("Access-Control-Allow-Origin: {o}\r\nVary: Origin\r\n"))
+            .unwrap_or_default();
+        write!(stream, "HTTP/1.1 {status} OK\r\nContent-Length: {length}\r\nContent-Type: {}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nPragma: no-cache\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\n{range}{cors}\r\n", served.mime)?;
         if !request.head && length != 0 {
             served.body.write_range(start, length, stream)?;
         }
@@ -292,6 +302,16 @@ mod tests {
             assert!(response.starts_with("HTTP/1.1 400"));
             assert_eq!(n, 0);
         }
+        // Only the app's own origin is granted CORS, and only by echoing it.
+        let (full, _) = exchange("GET", TOKEN, "", true);
+        assert!(!full.contains("Access-Control-Allow-Origin"));
+        #[cfg(not(target_os = "android"))]
+        let app = "dioxus://index.html";
+        #[cfg(target_os = "android")]
+        let app = "https://dioxus.index.html";
+        let (granted, n) = exchange("GET", TOKEN, &format!("Origin: {app}\r\n"), true);
+        assert!(granted.starts_with("HTTP/1.1 200") && n == 10);
+        assert!(granted.contains(&format!("Access-Control-Allow-Origin: {app}\r\nVary: Origin\r\n")));
         let (revoked, n) = exchange("GET", TOKEN, "", false);
         assert!(revoked.starts_with("HTTP/1.1 404"));
         assert_eq!(n, 0);

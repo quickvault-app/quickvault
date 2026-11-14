@@ -38,7 +38,15 @@ fn main() {
     );
     policy.assets.insert(
         "/cleanup.js",
-        ("text/javascript", include_bytes!("../../assets/app.js")),
+        (
+            "text/javascript",
+            concat!(
+                include_str!("../../assets/app.js"),
+                "\n",
+                include_str!("../../assets/player.js")
+            )
+            .as_bytes(),
+        ),
     );
     dioxus_desktop::launch::launch_virtual_dom(
         VirtualDom::new(app),

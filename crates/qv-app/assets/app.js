@@ -4,20 +4,21 @@ function clearControls(){
     for(const input of document.querySelectorAll("input,textarea")){
         // Consent is controlled by the Rust epoch; do not silently change it.
         // Controlled fields mirror Rust state and are re-rendered from it.
-        if(input.type==="checkbox"||input.type==="radio")continue;
+        // Player sliders (seek, volume) hold no input (player.js).
+        if(input.type==="checkbox"||input.type==="radio"||input.type==="range")continue;
         if(input.getAttribute("data-qv-controlled")==="true")continue;
         input.value="";
     }
     clearCardMirror();
 }
-// Revoke renderer playback/buffers as well as Rust's streaming capability.
+// Revoke renderer playback/buffers (player.js) as well as Rust's streaming capability.
 // Removed nodes are handled even if a page/test still holds a JS reference.
 function stopMedia(root){
     const nodes=[];
     if(root instanceof Element&&root.matches("audio,video,img"))nodes.push(root);
     if(root.querySelectorAll)nodes.push(...root.querySelectorAll("audio,video,.viewer img"));
     for(const node of nodes){
-        if(node instanceof HTMLMediaElement){node.pause();node.removeAttribute("src");node.load();}
+        if(node instanceof HTMLMediaElement){dropBlob(node);node.pause();node.removeAttribute("src");node.load();}
         else if(node instanceof HTMLImageElement)node.removeAttribute("src");
     }
 }
@@ -48,11 +49,13 @@ const forms=new MutationObserver(records=>{
     for(const record of records)for(const node of record.removedNodes)stopMedia(node);
     const epoch=document.querySelector("[data-qv-epoch]")?.getAttribute("data-qv-epoch");
     if(epoch!==currentFormEpoch){currentFormEpoch=epoch;clearControls();stopMedia(document);}
+    loadBlobs(records);
+    wirePlayers();
     focusInserted(records);
     revokeHiddenPreview();
     autoPrompt();
 });
-forms.observe(document,{subtree:true,childList:true,attributes:true,attributeFilter:["data-qv-epoch","data-qv-autoprompt"]});
+forms.observe(document,{subtree:true,childList:true,attributes:true,attributeFilter:["data-qv-epoch","data-qv-autoprompt","data-qv-src"]});
 document.addEventListener("click",event=>{
     if(event.target instanceof Element&&event.target.closest("[data-qv-clear='true']"))clearControls();
 },true);

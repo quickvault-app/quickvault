@@ -37,17 +37,21 @@ pub fn run() -> ! {
     if crate::validation_media::enabled() {
         launch("QuickVault synthetic media", MEDIA_SCRIPT.as_bytes());
     }
-    launch("QuickVault", include_bytes!("../assets/app.js"))
+    launch("QuickVault", APP_SCRIPT.as_bytes())
 }
+
+/// The page script: cleanup policy plus the media player (plan 0057).
+const APP_SCRIPT: &str = concat!(
+    include_str!("../assets/app.js"),
+    "\n",
+    include_str!("../assets/player.js")
+);
 
 /// Synthetic shared-screen preview; no persistent vault action is permitted.
 #[cfg(feature = "validation")]
 pub fn run_preview() -> ! {
     let _ = crate::ui::ACTIVE.set(Controller::preview());
-    launch(
-        "QuickVault · read-only preview",
-        include_bytes!("../assets/app.js"),
-    )
+    launch("QuickVault · read-only preview", APP_SCRIPT.as_bytes())
 }
 /// Actual shared screens and core operations, using only synthetic fixture data.
 #[cfg(feature = "validation")]
@@ -62,6 +66,8 @@ pub fn run_flow_fixture() -> ! {
     let _ = crate::ui::ACTIVE.set(fixture);
     const SCRIPT: &str = concat!(
         include_str!("../assets/app.js"),
+        "\n",
+        include_str!("../assets/player.js"),
         "\n",
         include_str!("bin/flow.js")
     );
@@ -78,6 +84,8 @@ pub fn run_flow_fixture() -> ! {
 #[cfg(feature = "validation")]
 const MEDIA_SCRIPT: &str = concat!(
     include_str!("../assets/app.js"),
+    "\n",
+    include_str!("../assets/player.js"),
     "\n",
     include_str!("bin/media.js")
 );

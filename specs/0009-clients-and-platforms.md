@@ -299,13 +299,19 @@ release, but no longer gates the feature.
 - **Attachment previews** (owner, 2026-11-07; plan 0044). The item page shows
   the entry's attachments as a shelf with an add tile. Opening one previews
   it in a full-window viewer under 0003 §6.4: images (fit or actual size,
-  panning), audio and video (player), text (reader). Other types offer only
+  panning), audio and video (the app's own player: play/pause, seek, time,
+  mute and volume; for video on desktop a full-screen button that makes the
+  window full screen, with the controls hiding while it plays under a still
+  pointer), text (reader). Other types offer only
   saving a copy. Verify through bounded protected chunks and serve authenticated
   ranges through an unguessable per-preview route on the app's existing numeric
   loopback listener (0003 §6.4), never a plaintext file or whole-media response
   vector. Closing, navigating away, lock and hiding the window revoke the source.
   CSP img/media allow only self and that exact HTTP listener origin; retain the
-  separate edit websocket policy. Media preload is none, no autoplay. Large or
+  separate edit websocket policy. On Linux, media plays from renderer memory
+  instead (0003 §6.4), so the CSP also allows `blob:` media and a fetch from
+  that listener. No autoplay; an opened preview may load its media before play
+  to show the first frame and duration (0003 §6.4). Large or
   unmeasured image decodes use a size/dimension explanation and explicit Load
   image action rather than silently consuming a large allocation. Framework,
   kernel, media-engine and GPU copies retain 0008's best-effort limits.
@@ -559,6 +565,11 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
 
 ## Changelog
 
+- 2026-11-14: §1.8: the viewer has the app's own media player (window full
+  screen for video on desktop); Linux plays media from memory (0003 §6.4);
+  opened audio may load before play (owner request, plan 0057). Still Draft.
+- 2026-11-14: §1.8: an opened video preview preloads to show its first
+  frame; audio preload stays none (owner request, plan 0057). Still Draft.
 - 2026-11-14: §1.4: the optional remote service (phase 4) is not planned
   (owner request). No other requirement changes. Still Draft.
 - 2026-11-12: §5.1 Windows profile: ACL owner-only rules, identity and

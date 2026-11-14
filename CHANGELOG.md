@@ -949,6 +949,31 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Fixed
 
+- 2026-11-14: Security (Linux, plan 0057): previewed audio and video no
+  longer reach the disk. WebKitGTK buffered playing media to an unlinked file
+  in `/var/tmp` (since plan 0050, against 0003 §6.4). Verified media is now
+  fetched once into memory and played from there: MP4s as Media Source
+  Extensions fragments rewritten losslessly from their own sample tables,
+  other files as a blob. The listener grants CORS to the app's own origin for
+  that fetch; the Linux CSP allows `blob:` media and that fetch. This also
+  plays MP4s whose index is at the end (OBS's default) and fixes play again
+  after the end. Known WebKitGTK limit: replay still fails for a B-frame video
+  with a single keyframe (a short clip); the test clip now has one per second.
+- 2026-11-14: The viewer has its own media player (plan 0057, 0009 §1.8):
+  play/pause, seek, time, mute and volume, with Space/K, M and F keys; for
+  video, a full-screen button in the control bar (the window goes full
+  screen; WebKitGTK's own video full screen drew black and is disabled), and
+  the controls hide while it plays under a still pointer.
+- 2026-11-14: Video previews (plan 0057): the player fills the viewer instead
+  of showing at 300×150, and an opened video preloads so its first frame shows
+  before play (0003 §6.4 amended). Dev builds
+  optimize the crypto crates, so attachment chunks open ~25× faster and
+  previews no longer stream too slowly for WebKit to keep playing; preview
+  reads open one 64 KiB chunk at a time.
+- 2026-11-14: MP4 videos whose major brand is a later ISO brand (`iso3`–`iso9`,
+  for example OBS recordings) now preview. So do MP4s whose `ftyp` box lists
+  an MP4 compatible brand; previously they showed "No preview for this kind
+  of file". QuickTime (`qt  `) is still refused.
 - 2026-10-28: Authenticate archive records, retained history and attachment
   chunks before publication or delivery to import code. Reject nonce-only
   corruption and contradictory reference digests, and preserve existing

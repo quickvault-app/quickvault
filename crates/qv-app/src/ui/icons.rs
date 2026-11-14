@@ -53,6 +53,12 @@ pub(crate) enum Icon {
     Clock,
     Restore,
     Palette,
+    Play,
+    Pause,
+    Volume,
+    Muted,
+    Expand,
+    Shrink,
 }
 impl Icon {
     fn path(self) -> &'static str {
@@ -135,6 +141,14 @@ impl Icon {
             Self::Clock => "M13.5 8a5.5 5.5 0 1 1-11 0a5.5 5.5 0 1 1 11 0zM8 5v3l2 1.5",
             Self::Restore => "M3 8a5 5 0 1 0 1.5-3.5M3 2.5V5h2.5",
             Self::Palette => "M3.5 3.5h9v9h-9zM3.5 6.5h9",
+            Self::Play => "M5 3.2v9.6L12.5 8z",
+            Self::Pause => "M5.5 3.5v9M10.5 3.5v9",
+            Self::Volume => {
+                "M2.5 6h2.5l3.5-3v10L5 10H2.5zM11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.7a6 6 0 0 1 0 8.6"
+            }
+            Self::Muted => "M2.5 6h2.5l3.5-3v10L5 10H2.5zM11 6l3.5 4M14.5 6L11 10",
+            Self::Expand => "M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10",
+            Self::Shrink => "M6 2.5V6H2.5M13.5 6H10V2.5M10 13.5V10h3.5M2.5 10H6v3.5",
         }
     }
 }

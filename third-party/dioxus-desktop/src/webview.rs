@@ -567,6 +567,9 @@ impl WebviewInstance {
                 settings.set_enable_page_cache(false);
                 settings.set_enable_hyperlink_auditing(false);
                 settings.set_enable_developer_extras(false);
+                // Native video full screen draws black here; the app offers
+                // window full screen instead (QuickVault plan 0057).
+                settings.set_enable_fullscreen(false);
             }
         }
 
