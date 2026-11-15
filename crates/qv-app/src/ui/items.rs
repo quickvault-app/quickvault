@@ -504,12 +504,36 @@ pub(crate) fn ListPane(
             }
         }
     };
+    // The group's actions, in the desktop list head and the phone head
+    // (plan 0063: the phone had no way to manage a group).
+    let group_actions = |g: qv_core::GroupHandle, button_id: &'static str| -> Element {
+        rsx! {
+                    div { class: "pop-anchor",
+                        button { class: "icon-btn", id: button_id, "aria-label": "Group actions", title: "Group actions", disabled: form,
+                            onclick: move |_| menu.set(!menu()),
+                            Svg { icon: Icon::More, large: true }
+                        }
+                        if menu() {
+                            button { class: "pop-scrim", "aria-label": "Close menu", tabindex: "-1", onclick: move |_| menu.set(false) }
+                            div { class: "menu pop end", role: "menu",
+                                button { class: "mi", onclick: { let mut f = act(&controller, epoch, WsAction::NewGroup(g)); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Folder } "New subgroup" }
+                                button { class: "mi", onclick: { let mut f = act(&controller, epoch, WsAction::RenameGroup(g)); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Edit } "Rename group" }
+                                button { class: "mi", id: "{button_id}-colour", onclick: { let mut f = act(&controller, epoch, WsAction::RenameGroup(g)); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Palette } "Change color" }
+                                button { class: "mi", onclick: { let mut f = go(&controller, epoch, Screen::Move(ItemHandle::Group(g), None)); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Move } "Move group" }
+                                hr {}
+                                button { class: "mi danger", onclick: { let mut f = act(&controller, epoch, WsAction::Delete(ItemHandle::Group(g))); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Trash } "Delete group" }
+                            }
+                        }
+                    }
+        }
+    };
     rsx! {
         // `fade-in` plays when the list mounts again after a tool page.
         section { class: if in_selection { "list selecting fade-in" } else { "list fade-in" }, "aria-label": "Items", onkeydown: keys,
             div { class: "phone-head",
                 div { class: "ph-row",
                     h2 { "{title}" }
+                    if let Some(g) = group.filter(|_| !in_selection) { {group_actions(g, "group-menu-phone")} }
                     // Android selects by holding a row (plan 0045).
                     if count > 0 && !in_selection && !cfg!(target_os = "android") { button { class: "link", id: "list-select-phone", disabled: form, onclick: start_selecting.clone(), "Select" } }
                     // The open vault as an account-style tile; tapping it
@@ -526,25 +550,7 @@ pub(crate) fn ListPane(
             if in_selection { {selbar} } else {
             div { class: "list-head",
                 h2 { "{title}" } span { class: "count", "{count}" } span { class: "sp" }
-                if let Some(g) = group {
-                    div { class: "pop-anchor",
-                        button { class: "icon-btn", id: "group-menu", "aria-label": "Group actions", title: "Group actions", disabled: form,
-                            onclick: move |_| menu.set(!menu()),
-                            Svg { icon: Icon::More, large: true }
-                        }
-                        if menu() {
-                            button { class: "pop-scrim", "aria-label": "Close menu", tabindex: "-1", onclick: move |_| menu.set(false) }
-                            div { class: "menu pop end", role: "menu",
-                                button { class: "mi", onclick: { let mut f = act(&controller, epoch, WsAction::NewGroup(g)); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Folder } "New subgroup" }
-                                button { class: "mi", onclick: { let mut f = act(&controller, epoch, WsAction::RenameGroup(g)); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Edit } "Rename group" }
-                                button { class: "mi", id: "group-colour", onclick: { let mut f = act(&controller, epoch, WsAction::RenameGroup(g)); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Palette } "Change color" }
-                                button { class: "mi", onclick: { let mut f = go(&controller, epoch, Screen::Move(ItemHandle::Group(g), None)); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Move } "Move group" }
-                                hr {}
-                                button { class: "mi danger", onclick: { let mut f = act(&controller, epoch, WsAction::Delete(ItemHandle::Group(g))); move |e| { menu.set(false); f(e) } }, Svg { icon: Icon::Trash } "Delete group" }
-                            }
-                        }
-                    }
-                }
+                if let Some(g) = group { {group_actions(g, "group-menu")} }
                 if count > 0 { button { class: "icon-btn", id: "list-select", "aria-label": "Select items", title: "Select items (Ctrl-click, Shift-click)", disabled: form, onclick: start_selecting, Svg { icon: Icon::Check } } }
                 button { class: "icon-btn acc", id: "list-new", "aria-label": "New item", title: "New item (Ctrl N)", disabled: form, onclick: new_entry, Svg { icon: Icon::Plus } }
             }
@@ -560,10 +566,12 @@ pub(crate) fn ListPane(
             // Where the sidebar lists no groups (phone, narrow window), "All
             // items" and every group show the top-level groups as chips, the
             // current one marked; tapping it again deselects it, back to "All
-            // items" (CSS shows them there, plan 0063).
-            if matches!(list, Screen::Browse(_)) && !top_groups.is_empty() {
+            // items". "New group" ends the row, also with no groups yet (CSS
+            // shows the row there, plan 0063).
+            if matches!(list, Screen::Browse(_)) {
                 {
                     let inside = group_view.as_ref().map(|v| v.crumbs.iter().map(|c| c.0).collect::<Vec<_>>()).unwrap_or_default();
+                    let root = controller.read(epoch, |s| s.root()).and_then(Result::ok);
                     rsx! {
                         div { class: "subgroups root-groups", role: "group", "aria-label": "Groups",
                             for g in top_groups.iter().cloned() {
@@ -572,9 +580,12 @@ pub(crate) fn ListPane(
                                     let to = if on { Screen::Browse(None) } else { Screen::Browse(Some(g.handle)) };
                                     rsx! {
                                         button { class: if on { "chip on" } else { "chip" }, disabled: form, "aria-pressed": if on { "true" } else { "false" },
-                                            onclick: go(&controller, epoch, to), Svg { icon: Icon::Folder } "{g.name.as_str()}" }
+                                            onclick: go(&controller, epoch, to), span { class: "dot {item_hue(g.colour, &g.handle.id_hex())}" } "{g.name.as_str()}" }
                                     }
                                 }
+                            }
+                            if let Some(r) = root {
+                                button { class: "chip add", id: "chip-new-group", disabled: form, onclick: act(&controller, epoch, WsAction::NewGroup(r)), Svg { icon: Icon::Plus } "New group" }
                             }
                         }
                     }

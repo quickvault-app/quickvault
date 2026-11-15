@@ -12,7 +12,10 @@ Dates are ISO 8601. Newest first within each section.
 - 2026-11-15: Groups on the phone, and the last group remembered (owner
   request, plan 0063). "All items" and every group show the vault's
   top-level groups as chips where the sidebar does not (phones, narrow
-  windows); the current one is marked, and tapping it again shows all items. Unlocking a vault opens
+  windows); the current one is marked, and tapping it again shows all items.
+  A "New group" chip creates a group there. Chips show each group's color,
+  phones get the group actions menu (new subgroup, rename, color, move,
+  delete), and Settings links to the trash, which phones could not reach. Unlocking a vault opens
   the group it last showed on this device. The app keeps that in a small
   `views` file, sealed under a new `device-view` key derived from the vault
   key, so the file names no vault and holds no readable vault data.

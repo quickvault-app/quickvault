@@ -97,3 +97,15 @@ chips; the last group per vault, encrypted per-device note).
   returns to "All items". A tapped chip kept the touch "hover" style
   (white text over the marked colour): hover styles now apply only under
   `(hover:hover)`, and `.chip.on` keeps its colour when hovered.
+- 2026-11-15: owner QA: no way to create a group on the phone (the sidebar's
+  "+" is desktop-only). A dashed "New group" chip ends the row, shown even
+  when the vault has no groups.
+- 2026-11-15: owner asked what desktop can do that phones cannot. Audit of
+  hidden desktop surfaces (`.titlebar`, `.side`, `.list-head`, `.row-menu`,
+  `desk-only`): covered on phones were lock/switch vault and theme
+  (Settings), item edit and actions (phone bar), selection (hold), new
+  item (FAB) and conflicts (list note). Missing, now added: the group
+  actions menu (shared `group_actions` in the phone head), group colours
+  on the chips (owner report), Trash (Settings, Vault). Still missing:
+  type filters (Logins, Cards, …) and the full search of usernames and
+  websites (command bar); proposed to the owner.

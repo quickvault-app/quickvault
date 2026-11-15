@@ -1147,6 +1147,8 @@ fn Settings(controller: Controller, epoch: FormEpoch, revision: u64, pane: Pane)
                         }
                     }
                     {row(Icon::Edit, "Name and retention", "Vault name, description, history and trash", Screen::Settings(Pane::General), "settings-general")}
+                    // The phone has no sidebar: Trash is reachable here (plan 0063).
+                    {row(Icon::Trash, "Trash", "Deleted items, kept until you delete them for good", Screen::Trash, "settings-trash")}
                     {row(Icon::Clock, "Snapshots", "Restore an earlier copy into a new vault", Screen::Snapshots, "settings-snapshots")}
                     {row(Icon::File, "Storage", "File size, free space and compaction", Screen::Settings(Pane::Storage), "settings-storage")}
                     {row(Icon::Archive, "Archives", "Export or merge changes as an encrypted file", Screen::Archives, "settings-archives")}

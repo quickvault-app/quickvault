@@ -206,6 +206,9 @@ input::-webkit-caps-lock-indicator{display:none;content:none}
 .filter input{flex:1;min-width:0;border:0;background:none;height:100%}
 .subgroups{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 8px}
 .root-groups{display:none}
+.chip.add{border-style:dashed;color:var(--text3)}
+.chip .dot{width:8px;height:8px;border-radius:3px;background:hsl(var(--h),55%,55%);flex:none;transition:border-radius .2s}
+.chip.on .dot{border-radius:50%}
 .rows{flex:1;overflow-y:auto;padding:0 8px 12px}
 .sect{font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.05em;padding:10px 8px 4px}
 .row{position:relative;display:flex;align-items:center;gap:11px;width:100%;padding:8px;border:0;border-radius:10px;background:none;text-align:left;margin-bottom:1px;

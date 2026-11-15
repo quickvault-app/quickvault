@@ -289,7 +289,10 @@ release, but no longer gates the feature.
 - **Groups and the last group** (owner, 2026-11-15; plan 0063). Where the
   sidebar lists no groups (phones, narrow windows), "All items" and every
   group offer the top-level groups as chips to switch directly; the current
-  one is marked, and choosing it again returns to "All items". Unlocking a vault opens the group it last
+  one is marked, and choosing it again returns to "All items". A "New group"
+  chip ends the row, also before any group exists. Chips show each group's
+  colour; a group's actions (new subgroup, rename, colour, move, delete) are
+  in its list header on every layout, and Settings links to the trash. Unlocking a vault opens the group it last
   showed on this device, or "All items" when that group is gone. The app
   keeps this per device in its own data directory, sealed under the vault's
   `device-view` key (0002 §3.3): without VK the file names no vault and
