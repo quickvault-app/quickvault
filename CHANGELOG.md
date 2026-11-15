@@ -11,11 +11,13 @@ Dates are ISO 8601. Newest first within each section.
 
 - 2026-11-15: Snapshots no longer have a fixed 1 GiB budget (owner request,
   plan 0060): they use whatever room the vault does not need, up to the
-  16 GiB file cap, and never let the device's free space fall below 5% of
-  the disk (at least 2 GiB, at most 4 GiB). Any change prunes the
-  oldest snapshots when they no longer fit. When a change is saved without
-  its snapshot for lack of room, the app says so and the CLI warning names
-  the numbers. Age (30 days) and count (48) are unchanged.
+  16 GiB file cap. QuickVault keeps none of the disk in reserve; only when
+  the disk is actually full do changes prune the oldest snapshots so their
+  space inside the vault file is reused. When a change is saved without its
+  snapshot for lack of room, the app says so and the CLI warning names the
+  numbers; a save that fails because the disk is full now points to
+  deleting snapshots and compacting. Age (30 days) and count (48) are
+  unchanged.
 - 2026-11-15: Snapshots can be deleted one at a time or all at once (app
   Snapshots page, `qv snapshot rm <id>… | --all`), after a confirmation.
 - 2026-11-15: The vault file now gives disk space back (plan 0060). Deleting

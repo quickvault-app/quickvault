@@ -51,9 +51,11 @@ Changelog lines).
 None open. Owner approved the direction on 2026-11-15; the numbers below are
 owner-delegated (standing delegation 2026-11-02) and recorded here:
 
-1. **Disk floor:** snapshots never make the device's free space fall below
-   5% of the volume, at least 2 GiB and at most 4 GiB (revised 2026-11-15,
-   see Revisions; first written as max(2 GiB, 10%), at most 32 GiB).
+1. **Disk floor:** none (owner, 2026-11-15, second revision): QuickVault
+   reserves no share of the disk; the room is the file cap or the file's size
+   plus all free space. A save that fails for a full disk points to deleting
+   snapshots and compaction. (Earlier: max(2 GiB, 10%) ≤ 32 GiB, then 5%
+   within 2–4 GiB; see Revisions.)
 2. **Overhead allowance:** a commit fits when `(L + S) + (L + S)/64 + 64 MiB`
    is within the room (`L` live bytes, `S` snapshot-only bytes).
 3. **Automatic compaction:** after a commit whose file then has at least
@@ -102,8 +104,9 @@ pub struct SnapshotSpace { pub needed: u64, pub available: u64 }
 **Snapshot room (0007 §3.3 as amended).** At every commit of a file with a
 snapshot index the store computes:
 - `L`: the new live manifest's referenced ciphertext plus its sealed length;
-- `room = min(MAX_DB_BYTES, file_bytes + disk_free − floor)` (the disk term is
-  omitted when free space cannot be measured);
+- `room = min(MAX_DB_BYTES, file_bytes + disk_free)` (the disk term is
+  omitted when free space cannot be measured; no share of the disk is
+  reserved);
 - `S`: snapshot-only bytes, cheaply as the stored lengths of retained objects
   the new live manifest does not reference plus kept manifest rows other than
   the live one (SQL `octet_length`, no manifest decryption).
@@ -300,6 +303,13 @@ from the already enabled `Win32_Storage_FileSystem` feature.
   off entirely on a large, nearly full development disk (about 10 GB free of
   about 1 TB): a 10% floor there exceeds the free space. Owner-delegated
   numbers; to be reported to the owner.
+- 2026-11-15: Floor removed (owner: "QuickVault is not a storage manager. If
+  the user wants to use that last 5% disk, so be it"). The room is
+  `min(MAX_DB_BYTES, file size + free space)`; the full-disk error in the app
+  and the CLI hint now point to deleting snapshots and compaction. No
+  proactive low-disk warning (the OS already gives one; Storage shows free
+  space). Compaction keeps its own check that the copy fits with 256 MiB to
+  spare, since it writes a whole copy before the swap.
 
 ## Execution log
 
@@ -366,3 +376,13 @@ from the already enabled `Win32_Storage_FileSystem` feature.
   (1,058 passed, 0 failed, 7 ignored), qv-app `validation` tests (106 lib +
   3 real-window engine tests). Not run: Windows clippy/tests (CI), APK
   build, phone check. Fresh-context review pending.
+- 2026-11-15: Floor removal checked with focused runs only, at the owner's
+  request (the full suite made the PC struggle; that run was stopped before
+  its tests started): `cargo fmt --check`, `check-spdx.sh`,
+  `check-matrix.sh`, workspace clippy `-D warnings`, qv-app clippy with
+  `desktop` and with `validation`, `cargo test -p qv-store --lib -- space
+  compact snapshot` (22 passed), `cargo test -p qv-cli --bin qv --
+  exit_messages` (1 passed). The last full `cargo test --locked` (1,058
+  passed) and the real-window engine tests ran on the tree before this
+  change; the change touches only the room formula, two message strings and
+  their tests.

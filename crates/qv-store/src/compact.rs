@@ -437,10 +437,7 @@ mod tests {
 
         // Too little disk space for the copy: refused before any file.
         crate::space::DISK.with(|s| {
-            s.set(Some(Some(crate::space::DiskSpace {
-                free: 1024,
-                total: 1 << 40,
-            })));
+            s.set(Some(Some(crate::space::DiskSpace { free: 1024 })));
         });
         assert_eq!(err(u.compact(&|| false)), StoreError::StorageCapacity);
         reset();

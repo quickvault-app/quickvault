@@ -291,7 +291,7 @@ Explicit deletions (emptying the trash, final deletion, attachment removal,
 history purge) take no copy and, unless the user keeps them, remove the
 snapshots holding the deleted data in the same commit. Budgets are 30 days and
 48 snapshots; snapshot-only data uses the room the vault leaves (the file cap
-and the volume's free space less a floor, plan 0060). Any commit prunes the
+and the volume's free space, with no reserved share, plan 0060). Any commit prunes the
 oldest when they no longer fit; a snapshot that cannot fit is skipped, never
 the commit. Users may delete one or all. Compaction (0004 §1.4) rewrites the
 file without free pages, automatically after large frees and on request; the

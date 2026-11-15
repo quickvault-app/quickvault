@@ -193,7 +193,7 @@ impl AppError {
                 "Your change is saved. Its rollback record could not be updated. Restore access to device storage and reopen the vault; do not repeat the change."
             }
             Self::Core(CoreError::Store(qv_core::StoreError::StorageCapacity)) => {
-                "Storage is full or a storage quota or file-size limit was reached. Resolve it and reopen the vault before retrying."
+                "Storage is full or a storage quota or file-size limit was reached. Free some space and reopen the vault before retrying. Deleting snapshots and compacting the vault file (Settings → Storage) can also free space."
             }
             Self::Core(CoreError::Store(qv_core::StoreError::DamagedAnchor)) => {
                 "The local rollback record is damaged. Keep both files. Use explicit recovery to authenticate and inspect the vault read-only before accepting a new baseline."

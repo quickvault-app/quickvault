@@ -125,12 +125,13 @@ data (retained manifests other than the live one, plus objects only snapshots
 reference) has no fixed budget: it may use the **room** the vault does not
 need (owner, 2026-11-15; plan 0060). At each commit the room is the lesser of
 the vault file cap (0004 §4.1, `MAX_DB_BYTES`) and the file's current size plus
-the volume's free space minus a floor of 5% of the volume, at least 2 GiB and
-at most 4 GiB (the volume term is left out when free space cannot be measured).
-A commit fits when its live data plus snapshot-only data, plus 1/64 of that sum
-and 64 MiB of allowance, is within the room. Snapshots therefore give way to
-live data and to the device's free space; neither can fail a commit because of
-them.
+the volume's free space (the volume term is left out when free space cannot be
+measured). QuickVault reserves none of the user's disk: snapshots give way only
+to live data and to a volume that is actually full. A commit fits when its live
+data plus snapshot-only data, plus 1/64 of that sum and 64 MiB of allowance, is
+within the room. A save that fails because the volume is full changes nothing
+and says so, pointing to deleting snapshots and compaction (0004 §1.4) beside
+freeing space.
 
 Prune the oldest snapshots first until the budgets fit. Any commit that no
 longer fits the room prunes, whether or not it takes a snapshot; age and count
@@ -222,7 +223,7 @@ reference set. Purge acknowledgements must not imply independent copies vanished
 ## Changelog
 
 - 2026-11-15: §3.3: snapshot-only data uses the room the vault does not need
-  (file cap and volume free space less a floor) instead of a 1 GiB budget; any
+  (file cap and volume free space, no reserved disk share) instead of a 1 GiB budget; any
   commit prunes when it no longer fits; skipped snapshots are reported to the
   user; the user may delete one or all snapshots (owner request, plan 0060;
   numbers delegated).

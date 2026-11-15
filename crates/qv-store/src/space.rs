@@ -5,9 +5,11 @@
 //! data may use together.
 //!
 //! The room is the lesser of the file cap ([`MAX_DB_BYTES`]) and what the
-//! file may grow to without the volume's free space falling below the floor
-//! ([`floor`]). A commit fits when live plus snapshot-only data, plus 1/64 of
-//! that sum for SQLite's own pages and [`ALLOWANCE`], is within the room.
+//! file may grow to with the volume's free space: QuickVault reserves none
+//! of the user's disk (owner, 2026-11-15), so snapshots give way only when
+//! the volume is actually full. A commit fits when live plus snapshot-only
+//! data, plus 1/64 of that sum for SQLite's own pages and [`ALLOWANCE`], is
+//! within the room.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -20,14 +22,6 @@ use crate::limits::{MAX_DB_BYTES, PAGE_SIZE};
 use crate::schema;
 use crate::snapshot_index::SnapshotIndex;
 
-/// The smallest volume floor (owner-delegated, plan 0060).
-pub(crate) const FLOOR_MIN: u64 = 2 * 1024 * 1024 * 1024;
-
-/// The largest volume floor (owner-delegated, plan 0060). A share of a
-/// large, nearly full disk must not switch snapshots off while gigabytes
-/// are still free.
-pub(crate) const FLOOR_MAX: u64 = 4 * 1024 * 1024 * 1024;
-
 /// Fixed allowance beside the 1/64 overhead share (plan 0060).
 pub(crate) const ALLOWANCE: u64 = 64 * 1024 * 1024;
 
@@ -39,8 +33,6 @@ pub(crate) const COMPACT_SPARE: u64 = 256 * 1024 * 1024;
 pub(crate) struct DiskSpace {
     /// Bytes this user may still write.
     pub(crate) free: u64,
-    /// The volume's size.
-    pub(crate) total: u64,
 }
 
 #[cfg(test)]
@@ -68,31 +60,20 @@ fn measure(dir: &Path) -> Option<DiskSpace> {
     let st = rustix::fs::statvfs(dir).ok()?;
     Some(DiskSpace {
         free: st.f_bavail.saturating_mul(st.f_frsize),
-        total: st.f_blocks.saturating_mul(st.f_frsize),
     })
 }
 
 #[cfg(windows)]
 fn measure(dir: &Path) -> Option<DiskSpace> {
-    let (free, total) = qv_win::fs::disk_space(dir).ok()?;
-    Some(DiskSpace { free, total })
-}
-
-/// The free space snapshots never take: 5% of the volume, within
-/// [`FLOOR_MIN`]..=[`FLOOR_MAX`].
-pub(crate) fn floor(total: u64) -> u64 {
-    (total / 20).clamp(FLOOR_MIN, FLOOR_MAX)
+    let (free, _total) = qv_win::fs::disk_space(dir).ok()?;
+    Some(DiskSpace { free })
 }
 
 /// The room live and snapshot-only data may use together, for a file of
 /// `file_bytes` on a volume with `disk` space.
 pub(crate) fn room(file_bytes: u64, disk: Option<DiskSpace>) -> u64 {
     match disk {
-        Some(d) => MAX_DB_BYTES.min(
-            file_bytes
-                .saturating_add(d.free)
-                .saturating_sub(floor(d.total)),
-        ),
+        Some(d) => MAX_DB_BYTES.min(file_bytes.saturating_add(d.free)),
         None => MAX_DB_BYTES,
     }
 }
@@ -267,41 +248,17 @@ mod tests {
     const GIB: u64 = 1024 * 1024 * 1024;
 
     #[test]
-    fn space_floor_is_a_tenth_within_bounds() {
-        assert_eq!(floor(0), FLOOR_MIN);
-        assert_eq!(floor(10 * GIB), FLOOR_MIN);
-        assert_eq!(floor(60 * GIB), 3 * GIB);
-        assert_eq!(floor(2048 * GIB), FLOOR_MAX);
-        // A 1 TB disk with 10 GB free still leaves room for snapshots.
-        let nearly_full = DiskSpace {
-            free: 10 * GIB,
-            total: 1000 * GIB,
-        };
-        assert_eq!(room(GIB, Some(nearly_full)), 7 * GIB);
-    }
-
-    #[test]
-    fn space_room_is_the_file_cap_or_the_disk_allowance() {
+    fn space_room_is_the_file_cap_or_all_free_space() {
         assert_eq!(room(GIB, None), MAX_DB_BYTES);
-        let big = DiskSpace {
-            free: 500 * GIB,
-            total: 1000 * GIB,
-        };
+        let big = DiskSpace { free: 500 * GIB };
         assert_eq!(room(GIB, Some(big)), MAX_DB_BYTES);
-        // 64 GB volume, 2 GiB free: the 3.2 GB floor is not free, so the
-        // file may not even keep its size.
-        let tight = DiskSpace {
-            free: 2 * GIB,
-            total: 64 * GIB,
-        };
-        let r = room(4 * GIB, Some(tight));
-        assert_eq!(r, 4 * GIB + 2 * GIB - floor(64 * GIB));
-        assert!(r < 4 * GIB);
-        let full = DiskSpace {
-            free: 0,
-            total: 64 * GIB,
-        };
-        assert_eq!(room(GIB, Some(full)), 0);
+        // No share of the disk is held back: a nearly full disk still
+        // leaves all its free space.
+        let nearly_full = DiskSpace { free: 10 * GIB };
+        assert_eq!(room(GIB, Some(nearly_full)), 11 * GIB);
+        // A full disk leaves only what the file already holds.
+        let full = DiskSpace { free: 0 };
+        assert_eq!(room(4 * GIB, Some(full)), 4 * GIB);
     }
 
     #[test]

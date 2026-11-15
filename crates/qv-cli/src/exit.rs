@@ -137,7 +137,7 @@ fn hint(e: CoreError) -> Option<&'static str> {
             "do not repeat the change; restore access to the state directory and reopen the vault to complete its rollback record",
         ),
         CoreError::Store(StoreError::StorageCapacity) => Some(
-            "free space or resolve the filesystem quota/file-size limit, then reopen before retrying",
+            "free space or resolve the filesystem quota/file-size limit, then reopen before retrying; `qv snapshot rm --all` and `qv compact` can free space held by the vault file",
         ),
         CoreError::Store(StoreError::DamagedAnchor) => Some(
             "preserve the vault and its rollback record; use explicit `qv recover <path>` to authenticate and inspect read-only before deliberately accepting a baseline",
@@ -288,6 +288,7 @@ mod tests {
         let capacity = CliError::from(StoreError::StorageCapacity);
         assert_eq!(capacity.code, OTHER);
         assert!(capacity.message.contains("quota"));
+        assert!(capacity.message.contains("qv snapshot rm --all"));
         let damaged = CliError::from(StoreError::DamagedAnchor);
         assert_eq!(damaged.code, INTEGRITY);
         assert!(damaged.message.contains("preserve"));
