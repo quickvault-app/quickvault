@@ -886,6 +886,8 @@ button.set-row:hover:enabled{background:var(--raised)}
 @container app (max-width: 640px){
   .v-stage{padding:6px 10px}
   .v-nav{top:auto;bottom:6px;transform:none}
+  /* The arrows get their own strip under the media, clear of the player's controls. */
+  .viewer:not(.full) .v-stage:has(>.v-nav){padding-bottom:56px}
   .v-btn .v-lbl{display:none}
   .v-img img,.v-video .v-player{max-height:calc(100vh - 200px)}
   .v-volume{display:none}

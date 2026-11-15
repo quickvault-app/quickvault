@@ -440,3 +440,7 @@ benefit while the listener stays; media keeps the listener for now.
   amended. Same session: the QR scan preview keeps the camera frame's
   proportions (`fit()` transform on the TextureView). Both await the owner's
   check on the phone.
+- 2026-11-14 (owner, phone): full screen works. The previous/next arrows
+  overlapped the control bar on narrow screens (they sit at the stage's
+  bottom corners there); the stage now keeps a 56 px strip under the media
+  for them when there is more than one file.

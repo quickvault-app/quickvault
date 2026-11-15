@@ -953,6 +953,8 @@ Dates are ISO 8601. Newest first within each section.
   player fills the screen with the system bars hidden; the button, Back,
   closing the preview or leaving the app ends it. A tap that only brings the
   hidden controls back no longer also pauses the video (plan 0057).
+- 2026-11-14: On narrow screens the preview's previous/next arrows sit in their
+  own strip under the file instead of over the video's controls (plan 0057).
 - 2026-11-14: The Android QR scan preview keeps the camera's proportions
   (it was stretched to the dialog's shape), stays upright when the screen
   rotates and shows the whole scanned frame. Detection is unchanged.
