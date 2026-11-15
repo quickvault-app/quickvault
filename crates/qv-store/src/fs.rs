@@ -776,6 +776,22 @@ mod tests {
     use super::test_dir::{TestDir, write_file};
     use super::*;
 
+    /// Runs stale cleanup until `reclaimed` holds. While another test spawns
+    /// a child process, the child holds copies of this process's descriptors,
+    /// and so their `flock`s, until it execs; cleanup then rightly keeps a
+    /// temp whose last handle this test already dropped. A real leak still
+    /// fails after the deadline.
+    fn reclaim(target: &Path, reclaimed: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            remove_stale_temps(target).unwrap();
+            if reclaimed() || std::time::Instant::now() > deadline {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     fn err<T>(r: Result<T, StoreError>) -> StoreError {
         match r {
             Ok(_) => panic!("unexpectedly succeeded"),
@@ -987,8 +1003,9 @@ mod tests {
         drop(reader);
         let orphan = d.join(".new.qvault.tmp-fedcba9876543210-journal");
         write_file(&orphan, b"unknown owner", 0o600);
-        remove_stale_temps(&target).unwrap();
-        assert!(!temp.exists() && !alias.exists() && !journal.exists());
+        let gone = || !temp.exists() && !alias.exists() && !journal.exists();
+        reclaim(&target, gone);
+        assert!(gone());
         assert!(orphan.exists());
     }
 
@@ -1062,7 +1079,7 @@ mod tests {
         cleanup.unwrap();
         assert_eq!(before, 2);
         assert_eq!(during, 2, "live producer was reclaimed");
-        remove_stale_temps(&target).unwrap();
+        reclaim(&target, || count() == 0);
         assert_eq!(count(), 0);
     }
 
@@ -1108,7 +1125,7 @@ mod tests {
         conn.execute_batch("ROLLBACK").unwrap();
         drop(conn);
         drop(lease);
-        remove_stale_temps(&target).unwrap();
+        reclaim(&target, || !temp.exists() && !alias.exists());
         assert!(!temp.exists() && !alias.exists());
     }
 
@@ -1123,7 +1140,7 @@ mod tests {
         remove_stale_temps(&target).unwrap();
         assert!(temp.exists());
         drop(lease);
-        remove_stale_temps(&target).unwrap();
+        reclaim(&target, || !temp.exists());
         assert!(!temp.exists());
     }
 

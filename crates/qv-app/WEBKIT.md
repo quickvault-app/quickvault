@@ -149,6 +149,28 @@ Whenever a new WebKitGTK bug, workaround or limit is found, add an entry here
 - **Docs:** plan 0044.
 - **On change:** blur can be tried again, watching for flicker.
 
+### W11. Mute takes effect late without a PulseAudio server
+
+- **Symptom:** the sound continues for about 0.5 s after mute (about 0.2 s
+  late on unmute), while pause is instant. Seen on a desktop running native
+  PipeWire without `pipewire-pulse`, where mpv (native PipeWire output)
+  mutes instantly.
+- **Cause (reproduced):** WebKit's `autoaudiosink` tries `pulsesink` and,
+  with no PulseAudio server, falls back to `alsasink` (into PipeWire through
+  the ALSA plugin). Mute is applied ahead of ALSA's larger output buffer;
+  pause stops the output itself. Private-session probe, heard position
+  decoded from a recorded chirp: no PulseAudio server, mute pressed at
+  2.00 s, sound until 2.3 s; with `pipewire-pulse` (`pulsesink`), or with
+  `pipewiresink` forced, within 0.1 s, for both MP3 blob and M4A MSE
+  playback.
+- **Response:** none in the app. Running `pipewire-pulse` makes WebKit use
+  `pulsesink`; the owner confirmed mute is then immediate. An app-wide
+  `GST_PLUGIN_FEATURE_RANK=pipewiresink:MAX` would prefer PipeWire's own
+  sink, whose upstream rank is deliberately low; not adopted without a
+  full media qualification.
+- **Docs:** `CHANGELOG.md` (2026-11-15).
+- **On change:** check mute against pause with no PulseAudio server.
+
 ## Testing method
 
 Real-engine checks run on a private X server, with a private D-Bus and

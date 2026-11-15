@@ -14,7 +14,8 @@ Dates are ISO 8601. Newest first within each section.
   linked from the app README, `ARCHITECTURE.md` §6 and the AGENTS.md
   documentation duties (owner request).
 - 2026-11-15: The audio preview's bars rest until you press Play and glide
-  down when you pause (owner request, plan 0061). On Android they then follow the playing sound; on
+  down when you pause, and the disc turns with the playback position: still
+  while paused, following the slider while seeking (owner request, plan 0061). On Android they then follow the playing sound; on
   Linux and Windows they loop while playing. Known limit: WebKitGTK's Web
   Audio routing drops about a second of sound when it starts and adds
   silence after each pause, so Linux does not use it.
@@ -1004,6 +1005,16 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Fixed
 
+- 2026-11-15: The media player's volume slider shows 0 while muted and
+  returns to the previous volume on unmute (owner report).
+  Known limit on Linux: without a PulseAudio server (`pipewire-pulse`),
+  WebKit plays through ALSA and mute takes about 0.5 s to silence the sound
+  (`crates/qv-app/WEBKIT.md` W11).
+- 2026-11-15: qv-store stale-temp cleanup tests no longer fail intermittently
+  (seen in CI). While a parallel test spawns a child process, the child
+  briefly holds this process's descriptors and their `flock`s until it
+  execs, so cleanup rightly keeps the temp; the tests now retry cleanup
+  until a deadline instead of asserting on the first pass.
 - 2026-11-15: Choosing a file in the system file picker no longer locks the
   vault after a minute: while a picker is open the inactivity lock waits
   5 minutes, and closing the picker counts as activity. Screen lock and sleep

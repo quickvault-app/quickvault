@@ -655,6 +655,9 @@ function wirePlayer(player){
     const eq=media instanceof HTMLAudioElement&&!matchMedia("(prefers-reduced-motion: reduce)").matches
         ?player.closest(".v-audio")?.querySelector(".v-eq"):null;
     const bars=eq?[...eq.children]:[];
+    // The disc turns with the playback position (a turn per 6 s), so it is
+    // still while paused and follows the slider while seeking (owner request).
+    const disc=eq?player.closest(".v-audio")?.querySelector(".v-disc"):null;
     // A reused card starts on the CSS loop until this element is routed.
     if(eq&&levels.get(media)?.context!==audio){eq.removeAttribute("data-live");for(const bar of bars)bar.style.removeProperty("height");}
     // Stopping glides the bars down from where they are: a removed animation
@@ -686,6 +689,7 @@ function wirePlayer(player){
         if(!dragging){seek.max=String(duration||1);seek.value=String(Math.min(media.currentTime,duration||0));}
         seek.style.setProperty("--p",`${duration?100*Number(seek.value)/duration:0}%`);
         time.textContent=`${clock(dragging?Number(seek.value):media.currentTime)} / ${clock(duration)}`;
+        if(disc)disc.style.transform=`rotate(${((dragging?Number(seek.value):media.currentTime)*60)%360}deg)`;
         drawBars();
     };
     const tick=()=>{draw();frame=media.paused?0:requestAnimationFrame(tick);};
@@ -697,7 +701,8 @@ function wirePlayer(player){
         play.setAttribute("aria-label",playing?"Pause":"Play");
         play.title=playing?"Pause (Space)":"Play (Space)";
         if(mute){const quiet=media.muted||media.volume===0;player.toggleAttribute("data-muted",quiet);mute.setAttribute("aria-label",quiet?"Unmute":"Mute");mute.title=quiet?"Unmute (M)":"Mute (M)";}
-        if(volume)volume.style.setProperty("--p",`${media.muted?0:100*media.volume}%`);
+        // Muted shows 0; unmuting returns to the kept volume (owner request).
+        if(volume){const level=media.muted?0:media.volume;volume.value=String(level);volume.style.setProperty("--p",`${100*level}%`);}
         if(playing&&!frame)frame=requestAnimationFrame(tick);
         draw();
     };
