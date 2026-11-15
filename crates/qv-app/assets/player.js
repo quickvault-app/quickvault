@@ -598,6 +598,51 @@ function clock(seconds){
     const s=Math.floor(seconds),h=Math.floor(s/3600),m=Math.floor(s/60)%60,r=String(s%60).padStart(2,"0");
     return h?`${h}:${String(m).padStart(2,"0")}:${r}`:`${m}:${r}`;
 }
+// The audio card's bars follow the playing sound (plan 0061) where the engine
+// routes media through Web Audio cleanly: only an element that requested its
+// source with CORS (Android) is routed. WebKitGTK's routing drops about a
+// second of sound when it starts and adds silence after each pause, and a
+// cross-origin source without CORS would play silence, so Linux and Windows
+// keep the CSS loop. A routed element is heard only through the context, so
+// routing waits until the context runs; anything refused keeps the loop.
+let audio=null;
+const levels=new WeakMap();
+function startAudio(){
+    if(!audio&&window.AudioContext){try{audio=new AudioContext();}catch{audio=null;}}
+    return audio?audio.resume().catch(()=>{}):null;
+}
+function routeAudio(media){
+    const held=levels.get(media);
+    // An element routes once; one routed into a closed context stays silent.
+    if(held)return held.context===audio?held:null;
+    if(!audio||audio.state!=="running")return null;
+    if(media.crossOrigin!=="anonymous")return null;
+    let analyser=null;
+    try{
+        analyser=audio.createAnalyser();
+        analyser.fftSize=2048;analyser.smoothingTimeConstant=0.7;
+        // Connected first, so a refused source node leaves the element as it was.
+        analyser.connect(audio.destination);
+        audio.createMediaElementSource(media).connect(analyser);
+        const bins=new Uint8Array(analyser.frequencyBinCount),hz=audio.sampleRate/analyser.fftSize;
+        // Log-spaced bands from 50 Hz to 14 kHz, at least one bin each.
+        const edges=[];
+        for(let i=0;i<=24;i++)edges.push(Math.max(i?edges[i-1]+1:1,Math.round(50*Math.pow(280,i/24)/hz)));
+        const routed={context:audio,analyser,bins,edges};
+        levels.set(media,routed);
+        return routed;
+    }catch{analyser?.disconnect();return null;}
+}
+// Closing the last routed preview closes the context, releasing the audio
+// device; the next Play click makes another.
+function idleAudio(media){
+    const routed=levels.get(media);
+    if(!routed||media.isConnected)return;
+    routed.bins.fill(0);
+    if(!audio||routed.context!==audio)return;
+    if([...document.querySelectorAll("audio,video")].some(m=>levels.get(m)?.context===audio))return;
+    audio.close().catch(()=>{});audio=null;
+}
 function wirePlayer(player){
     if(wired.has(player))return;
     const media=player.querySelector("audio,video");
@@ -607,17 +652,48 @@ function wirePlayer(player){
     wired.add(player);
     let dragging=false,frame=0,idle=0,click=0;
     const ready=()=>media.readyState>=1&&Number.isFinite(media.duration);
+    const eq=media instanceof HTMLAudioElement&&!matchMedia("(prefers-reduced-motion: reduce)").matches
+        ?player.closest(".v-audio")?.querySelector(".v-eq"):null;
+    const bars=eq?[...eq.children]:[];
+    // A reused card starts on the CSS loop until this element is routed.
+    if(eq&&levels.get(media)?.context!==audio){eq.removeAttribute("data-live");for(const bar of bars)bar.style.removeProperty("height");}
+    // Stopping glides the bars down from where they are: a removed animation
+    // or a dropped inline height would snap them to rest (owner request).
+    let settling=0;
+    const settle=()=>{
+        for(const bar of bars)bar.style.height=getComputedStyle(bar).height;
+        eq.removeAttribute("data-playing");
+        void eq.offsetHeight;
+        eq.setAttribute("data-settling","");
+        for(const bar of bars)bar.style.removeProperty("height");
+        clearTimeout(settling);
+        settling=setTimeout(()=>eq.removeAttribute("data-settling"),500);
+    };
+    const drawBars=()=>{
+        const routed=eq?.hasAttribute("data-live")?levels.get(media):null;
+        if(!routed)return;
+        const{analyser,bins,edges}=routed;
+        if(media.paused){bins.fill(0);for(const bar of bars)bar.style.removeProperty("height");return;}
+        analyser.getByteFrequencyData(bins);
+        bars.forEach((bar,i)=>{
+            let peak=0;
+            for(let b=edges[i];b<edges[i+1]&&b<bins.length;b++)peak=Math.max(peak,bins[b]);
+            bar.style.height=`${12+88*Math.pow(peak/255,1.6)}%`;
+        });
+    };
     const draw=()=>{
         const duration=ready()?media.duration:0;
         if(!dragging){seek.max=String(duration||1);seek.value=String(Math.min(media.currentTime,duration||0));}
         seek.style.setProperty("--p",`${duration?100*Number(seek.value)/duration:0}%`);
         time.textContent=`${clock(dragging?Number(seek.value):media.currentTime)} / ${clock(duration)}`;
+        drawBars();
     };
     const tick=()=>{draw();frame=media.paused?0:requestAnimationFrame(tick);};
     const state=()=>{
         if(ready())player.setAttribute("data-qv-ready","");else player.removeAttribute("data-qv-ready");
         const playing=!media.paused&&!media.ended;
         player.setAttribute("data-state",playing?"playing":"paused");
+        if(eq?.hasAttribute("data-playing")&&!playing)settle();else eq?.toggleAttribute("data-playing",playing);
         play.setAttribute("aria-label",playing?"Pause":"Play");
         play.title=playing?"Pause (Space)":"Play (Space)";
         if(mute){const quiet=media.muted||media.volume===0;player.toggleAttribute("data-muted",quiet);mute.setAttribute("aria-label",quiet?"Unmute":"Mute");mute.title=quiet?"Unmute (M)":"Mute (M)";}
@@ -643,9 +719,20 @@ function wirePlayer(player){
         if(media.ended&&media.hasAttribute("data-qv-src")){loadBlob(media,true);return;}
         if(media.paused||media.ended)media.play().catch(()=>{});else media.pause();
     };
+    // The context starts inside the Play click (engines require a gesture);
+    // the element is routed once it plays and the context runs.
+    const listen=()=>{if(eq&&!media.paused&&routeAudio(media))eq.setAttribute("data-live","");};
+    const pressPlay=()=>{
+        if(eq&&media.crossOrigin==="anonymous"&&levels.get(media)?.context!==audio)startAudio()?.then(listen);
+        toggle();
+    };
     for(const name of ["play","pause","ended","emptied","loadedmetadata","durationchange","volumechange","seeked","timeupdate"])media.addEventListener(name,state);
     for(const name of ["play","pause","ended"])media.addEventListener(name,wake);
-    play.addEventListener("click",toggle);
+    if(eq){
+        media.addEventListener("playing",listen);
+        for(const name of ["pause","ended","emptied"])media.addEventListener(name,()=>idleAudio(media));
+    }
+    play.addEventListener("click",pressPlay);
     // Android: the player element itself goes full screen; leaving it (the
     // button, Back, closing the preview) is the engine's fullscreenchange.
     const fs=player.querySelector(".v-fs[data-qv-fs='element']");

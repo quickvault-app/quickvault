@@ -70,6 +70,7 @@ requests override the named intermediate commit/session boundary.
 | User-visible or repo-level change | `CHANGELOG.md` under Unreleased |
 | Spec fully implemented | Status `Implemented` only when code matches it fully |
 | Agent workflow/layout/conventions | `AGENTS.md`, affected skill; `.agents/README.md` if navigation changes |
+| WebKitGTK bug, workaround or limit found | Entry in `crates/qv-app/WEBKIT.md`; read it first for any engine/framework/major UI change |
 
 ## Engineering and verification
 

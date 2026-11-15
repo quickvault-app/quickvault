@@ -677,6 +677,8 @@ autofill entry-point feasibility early (0009 §6). Native dialogs or an engine
 fork are not required solely for deterministic memory wiping. Framework/OS
 intermediates have bounded, documented cleanup claims; active-content and OS
 release requirements remain. Framework selection is not validation evidence.
+Known WebKitGTK limits and their workarounds, to revisit on any engine or
+framework change, are in `crates/qv-app/WEBKIT.md`.
 
 ## 7. Delivery and validation
 

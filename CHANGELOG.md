@@ -9,6 +9,15 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Changed
 
+- 2026-11-15: Known WebKitGTK limits are tracked in `crates/qv-app/WEBKIT.md`
+  (symptom, response, what to revisit on an engine or framework change),
+  linked from the app README, `ARCHITECTURE.md` §6 and the AGENTS.md
+  documentation duties (owner request).
+- 2026-11-15: The audio preview's bars rest until you press Play and glide
+  down when you pause (owner request, plan 0061). On Android they then follow the playing sound; on
+  Linux and Windows they loop while playing. Known limit: WebKitGTK's Web
+  Audio routing drops about a second of sound when it starts and adds
+  silence after each pause, so Linux does not use it.
 - 2026-11-15: Snapshots no longer have a fixed 1 GiB budget (owner request,
   plan 0060): they use whatever room the vault does not need, up to the
   16 GiB file cap. QuickVault keeps none of the disk in reserve; only when

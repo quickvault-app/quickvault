@@ -1434,6 +1434,10 @@ pub(crate) fn Viewer(
                                 // Linux player.js plays it from memory (plans 0057, 0059).
                                 if cfg!(target_os = "linux") {
                                     audio { "data-qv-src": "{src.as_str()}", "data-qv-type": p.mime, "data-qv-size": "{p.size}", preload: "auto" }
+                                } else if cfg!(target_os = "android") {
+                                    // A CORS request (the listener grants the app's own origin)
+                                    // lets the level bars read the sound (plan 0061).
+                                    audio { src: "{src.as_str()}", preload: "metadata", crossorigin: "anonymous" }
                                 } else {
                                     audio { src: "{src.as_str()}", preload: "metadata" }
                                 }

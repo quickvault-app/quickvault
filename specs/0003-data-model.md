@@ -185,7 +185,15 @@ cancels pending playback loads, and late completions must not restore playback.
 A seek restores the selected position and preserves the paused state; moving
 the slider alone does not start playback.
 For that fetch the listener grants CORS to the app's own origin only, and the
-CSP adds `blob:` to media-src and the listener origin to connect-src. The
+CSP adds `blob:` to media-src and the listener origin to connect-src.
+An audio preview may show levels read by the engine's audio analyser from the
+playing element (owner request, 2026-11-15; plan 0061), only where the engine
+routes media through its analyser without changing what is heard: on Android,
+an element that requests the listener's route with CORS under the same
+own-origin grant. WebKitGTK's routing drops and delays sound, so Linux memory
+playback is not analysed. The analysis
+adds no fetch, file or plaintext copy beyond a small level array the page
+zeroes on pause; engine analyser buffers keep 0008's best-effort limits. The
 renderer's copies are dropped on close, navigation, lock and hiding, and
 overwritten after use where the page holds them; engine copies keep 0008's
 best-effort limits. Media is on demand, with no autoplay. An opened audio or
@@ -241,6 +249,9 @@ searchable. Paging MUST NOT silently omit records, fields or conflicts.
 
 ## Changelog
 
+- 2026-11-15: §6.4: an audio preview may show levels from the engine's
+  analyser of the playing element where routing does not change what is
+  heard; Android audio requests its route with CORS (owner request, plan 0061).
 - 2026-11-15: §6.3: the attachment maximum is 2 GiB; §6.4: Linux MP4 preview
   buffers around the playback position, other Linux memory playback is bounded
   at 256 MiB (owner request, plan 0059).

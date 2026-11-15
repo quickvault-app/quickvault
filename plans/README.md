@@ -99,3 +99,4 @@ plan, or a new plan that names the one it supersedes.
 | [0058](0058-picker-inactivity/PLAN.md) | File picking and playback: picker inactivity, shared input folders, playing preview (owner bug reports) | Implemented — APK build, phone check and fresh-context review pending |
 | [0059](0059-sizes-and-snapshots/PLAN.md) | Larger vaults and files, snapshots inside the vault, buffered playback (owner request) | Implemented — Android build, phone and Windows checks, fresh-context review pending |
 | [0060](0060-snapshot-space-and-compaction/PLAN.md) | Snapshot space from free room, deleting snapshots, vault compaction (owner request) | Implemented — Windows CI, phone check and fresh-context review pending |
+| [0061](0061-audio-levels/PLAN.md) | Audio preview bars: rest until Play, follow the sound on Android (owner request) | Implemented — full gates, phone check and fresh-context review pending; native levels proposed |

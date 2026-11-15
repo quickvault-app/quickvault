@@ -1,5 +1,8 @@
 # QuickVault shared app foundation
 
+Known WebKitGTK (Linux) bugs, our responses and what to revisit on an engine
+or framework change are tracked in [WEBKIT.md](WEBKIT.md).
+
 Android's **Open a vault file…** action uses the system document picker. It
 imports an independent private copy: edits in QuickVault do not update the
 selected document. Choose a closed/exported `.qvault`, enter its password and

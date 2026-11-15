@@ -309,7 +309,10 @@ release, but no longer gates the feature.
   window full screen, on Android the player itself becomes the engine's
   full-screen element, shown over the whole app window with the system bars
   hidden, and the button, Back, closing the preview or leaving the app ends
-  it; the controls hide while video plays under a still pointer), text
+  it; the controls hide while video plays under a still pointer; the audio
+  card's bars rest until playback starts, then follow the playing sound
+  where the engine can analyse it cleanly, otherwise a decorative loop while
+  playing, 0003 §6.4), text
   (reader). Other types offer only
   saving a copy. Verify through bounded protected chunks and serve authenticated
   ranges through an unguessable per-preview route on the app's existing numeric
@@ -595,6 +598,10 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
    not reconsider native input or a custom engine just for memory-copy concerns.
 
 ## Changelog
+
+- 2026-11-15: §1.8: the audio card's bars rest until playback starts and
+  follow the playing sound where the engine can analyse it cleanly (owner
+  request, plan 0061).
 
 - 2026-11-15: §1.8 snapshot deletion (one or all), the skipped-snapshot notice and the Storage settings with compaction (owner request, plan 0060).
 
