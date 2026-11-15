@@ -130,10 +130,12 @@ pub(crate) fn pick_path(
         .name("qv-picker".into())
         .spawn(move || {
             let _wake = crate::controller::WakeOnDrop;
+            let open = c.picker_open();
             #[cfg(target_os = "linux")]
             let chosen = crate::picker::pick(title, &kind);
             #[cfg(windows)]
             let chosen = qv_core::platform::pick(title, &kind);
+            drop(open);
             match chosen {
                 Ok(Some(path)) => match path.into_os_string().into_string() {
                     Ok(mut text) => {

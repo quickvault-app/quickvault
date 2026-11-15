@@ -31,8 +31,12 @@ static OS: OnceLock<Arc<AndroidPlatform>> = OnceLock::new();
 /// foreground defers only background expiry (decision 1's rule) until the
 /// lifecycle poller sees the activity back with the pick finished, or the pick
 /// forgotten by a lock. Screen lock, lost protection and the inactivity lock
-/// still apply. Only the poller drops it: dropping can run lock callbacks.
+/// (lengthened while the pick is open, see `PICK_OPEN`) still apply. Only the
+/// poller drops it: dropping can run lock callbacks.
 static PICK_DEFERRAL: Mutex<Option<BackgroundDeferral>> = Mutex::new(None);
+/// The open pick lengthens the inactivity limit; the poller drops it like the
+/// deferral, once the pick has an outcome and the activity is back.
+static PICK_OPEN: Mutex<Option<crate::controller::PickerOpen>> = Mutex::new(None);
 const CHUNK: i32 = 64 * 1024;
 
 /// Call the activity on this thread; a pending Java exception is cleared and
@@ -110,6 +114,12 @@ pub(crate) fn request_pick(c: &Controller, epoch: FormEpoch, kind: PickKind, cre
             .ok()
             .and_then(|mut held| std::mem::replace(&mut *held, deferral));
         drop(previous);
+        let open = c.picker_open();
+        let previous = PICK_OPEN
+            .lock()
+            .ok()
+            .and_then(|mut held| held.replace(open));
+        drop(previous);
     }
 }
 /// Poller only. Once a pick has an outcome, advance the revision so the
@@ -160,6 +170,10 @@ fn poll_pick(foreground: bool, seen: &mut Option<i64>) {
     if held && finished && (foreground || pick.is_none()) {
         let deferral = PICK_DEFERRAL.lock().ok().and_then(|mut held| held.take());
         drop(deferral);
+    }
+    if finished && (foreground || pick.is_none()) {
+        let open = PICK_OPEN.lock().ok().and_then(|mut held| held.take());
+        drop(open);
     }
 }
 /// Forget any document choice (lock).

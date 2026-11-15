@@ -24,6 +24,8 @@ pub const REVEAL_FOR: Duration = Duration::from_secs(30);
 pub const CLIPBOARD_FOR: Duration = Duration::from_secs(20);
 /// Inactivity limit while a recovery phrase is displayed (plan 0031 decision 5).
 pub const PHRASE_IDLE: Duration = Duration::from_secs(300);
+/// Inactivity limit while a system file picker is open (0009 §1.8).
+pub const PICKER_IDLE: Duration = Duration::from_secs(300);
 /// Single-line input bound, in UTF-8 bytes (plan 0031 decision 4).
 pub const LINE_MAX: usize = 1024;
 /// Multi-line notes and protected value bound, below the 64 KiB IPC ingress

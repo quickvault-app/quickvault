@@ -38,6 +38,42 @@ impl Drop for WakeOnDrop {
     }
 }
 
+/// A system file picker is open (0009 §1.8 Inactivity). The app sees no
+/// activity meanwhile, so the inactivity limit is [`PICKER_IDLE`] until every
+/// picker of this lock generation closes; closing counts as activity. A lock
+/// forgets open pickers, and a stale guard then changes nothing.
+///
+/// [`PICKER_IDLE`]: crate::workspace::PICKER_IDLE
+pub(crate) struct PickerOpen {
+    c: Controller,
+    lock_gen: u64,
+}
+
+impl Drop for PickerOpen {
+    fn drop(&mut self) {
+        let mut s = self.c.state();
+        if s.lock_gen == self.lock_gen {
+            s.pickers = s.pickers.saturating_sub(1);
+            s.active = Instant::now();
+        }
+    }
+}
+
+impl Controller {
+    /// Mark a system file picker open until the guard drops. Never hold the
+    /// state lock while the guard drops.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))] // Pickers need the UI.
+    pub(crate) fn picker_open(&self) -> PickerOpen {
+        let mut s = self.state();
+        s.pickers = s.pickers.saturating_add(1);
+        s.active = Instant::now();
+        PickerOpen {
+            c: self.clone(),
+            lock_gen: s.lock_gen,
+        }
+    }
+}
+
 /// Waits until [`wake_ui`] or `timeout`, whichever comes first; true when woken.
 /// Only the UI poll (built with `desktop`) and tests wait.
 #[cfg(any(feature = "desktop", test))]
@@ -505,6 +541,8 @@ pub(crate) struct State {
     pending_import: Option<Arc<qv_core::PendingVaultImport>>,
     import_name: String,
     import_ack: bool,
+    /// System file pickers open in this lock generation (see [`PickerOpen`]).
+    pub(crate) pickers: u32,
 }
 impl State {
     fn clear_inputs(&mut self) {
@@ -531,6 +569,7 @@ impl State {
         let rotation = self.phase == Phase::Rotation;
         let interrupted = self.op_running;
         self.lock_gen = self.lock_gen.wrapping_add(1);
+        self.pickers = 0;
         #[cfg(all(feature = "desktop", target_os = "android"))]
         crate::android::forget_pick();
         self.op_running = false;
@@ -686,6 +725,7 @@ impl Controller {
                 pending_import: None,
                 import_name: String::new(),
                 import_ack: false,
+                pickers: 0,
             }),
             working: AtomicBool::new(false),
             page_owner: AtomicU64::new(0),
@@ -1256,6 +1296,8 @@ impl Controller {
                 .is_some_and(crate::workspace::Workspace::shows_phrase)
         {
             crate::workspace::PHRASE_IDLE
+        } else if s.pickers > 0 {
+            crate::workspace::PICKER_IDLE
         } else {
             Duration::from_secs(60)
         };

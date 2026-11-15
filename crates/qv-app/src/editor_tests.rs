@@ -534,3 +534,31 @@ fn moving_the_pointer_postpones_the_inactivity_lock() {
     env.c.activity(FormEpoch(epoch.0.wrapping_sub(1)));
     assert_eq!(env.c.snapshot().phase, Phase::Locked);
 }
+
+#[test]
+fn an_open_file_picker_lengthens_the_inactivity_lock() {
+    use crate::controller::Phase;
+    use crate::workspace::PICKER_IDLE;
+    use std::time::{Duration, Instant};
+    let _k = lock();
+    let env = Env::unlocked();
+    let idle = |env: &Env, d: Duration| env.c.state().active = Instant::now() - d;
+    // A picker open for over a minute keeps the vault unlocked.
+    let open = env.c.picker_open();
+    idle(&env, Duration::from_secs(61));
+    assert_eq!(env.c.snapshot().phase, Phase::Unlocked);
+    // Closing it counts as activity; the usual minute applies again.
+    drop(open);
+    assert_eq!(env.c.snapshot().phase, Phase::Unlocked);
+    idle(&env, Duration::from_secs(61));
+    assert_eq!(env.c.snapshot().phase, Phase::Locked);
+    // Still bounded: the longer limit expires too.
+    drop(env);
+    let env = Env::unlocked();
+    let open = env.c.picker_open();
+    idle(&env, PICKER_IDLE);
+    assert_eq!(env.c.snapshot().phase, Phase::Locked);
+    // A picker closing after the lock changes nothing for the next unlock.
+    drop(open);
+    assert_eq!(env.c.state().pickers, 0);
+}

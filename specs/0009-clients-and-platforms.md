@@ -171,7 +171,10 @@ release, but no longer gates the feature.
   as activity: keys, clicks, typing, pointer movement, scrolling and touch.
   Pointer movement and scrolling are reported at most once a second, without
   positions, because the webview bridge forwards only click, input, change,
-  key and focus events.
+  key and focus events. The app sees no activity while a system file picker
+  is open, so the limit is then 5 minutes, and closing the picker (choosing
+  or cancelling) counts as activity. Screen lock, sleep and lost protection
+  still lock at once (owner bug report, 2026-11-15; plan 0058).
 - **Vault list** (plan 0041).
   - **Names (owner, 2026-11-06, refining 2026-11-05):** a vault has one
     name, the one stored (encrypted and synced) in its metadata.
@@ -572,6 +575,9 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
 
 ## Changelog
 
+- 2026-11-15: §1.8 Inactivity: an open system file picker lengthens the
+  inactivity limit to 5 minutes; closing it counts as activity (owner bug
+  report; limit delegated by the owner, standing 2026-11-02; plan 0058).
 - 2026-11-14: §1.8: video full screen on Android (the player element, system
   bars hidden; button, Back, close or leaving ends it) (owner, 0057).
 - 2026-11-14: §1.8: backward seek after EOS uses a fresh memory source on

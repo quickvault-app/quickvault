@@ -949,6 +949,10 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Fixed
 
+- 2026-11-15: Choosing a file in the system file picker no longer locks the
+  vault after a minute: while a picker is open the inactivity lock waits
+  5 minutes, and closing the picker counts as activity. Screen lock and sleep
+  still lock at once (owner bug report, plan 0058).
 - 2026-11-14: Video previews on Android have a full-screen button again: the
   player fills the screen with the system bars hidden; the button, Back,
   closing the preview or leaving the app ends it. A tap that only brings the
