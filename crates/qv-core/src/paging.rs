@@ -606,6 +606,10 @@ impl Row {
                         .iter()
                         .map(|f| f.name.allocated_bytes() + f.value.allocated_bytes())
                         .sum::<usize>()
+                    + e.copyable
+                        .iter()
+                        .map(|f| f.name.allocated_bytes())
+                        .sum::<usize>()
             }
             Self::Autofill(c) => {
                 c.title.allocated_bytes() + c.username.as_ref().map_or(0, Text::allocated_bytes)

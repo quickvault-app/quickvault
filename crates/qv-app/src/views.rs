@@ -101,6 +101,54 @@ pub struct EntryRow {
     pub conflict: bool,
     /// Its type bucket, one of [`qv_core::TYPE_BUCKETS`]; UI only.
     pub kind: &'static str,
+    /// What its row offers to copy.
+    pub copy: RowCopy,
+}
+/// What a list row offers to copy (plan 0063).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowCopy {
+    /// No copyable field: no button.
+    None,
+    /// A login with only its standard fields: username and password buttons.
+    Pair {
+        /// It has a username (a non-protected, non-URL field).
+        user: bool,
+        /// It has a protected field.
+        secret: bool,
+    },
+    /// A Wi-Fi network with only its standard fields: its password.
+    Secret,
+    /// Many fields (cards) or a layout of its own (any custom field, notes
+    /// and other items with fields): one button with a menu of its fields.
+    Menu,
+}
+fn row_copy(kind: &str, fields: &[qv_core::CopyField]) -> RowCopy {
+    use crate::editor::{ItemType, same_slot};
+    if fields.is_empty() {
+        return RowCopy::None;
+    }
+    let standard = |t: ItemType| {
+        fields.iter().all(|f| {
+            t.template()
+                .iter()
+                .any(|x| same_slot(f.name.expose(), x.name))
+        })
+    };
+    let secret = fields.iter().any(|f| f.protected);
+    match kind {
+        "login" if standard(ItemType::Login) => {
+            let user = fields
+                .iter()
+                .any(|f| !f.protected && f.kind != FieldKind::Url);
+            if user || secret {
+                RowCopy::Pair { user, secret }
+            } else {
+                RowCopy::Menu
+            }
+        }
+        "wifi" if standard(ItemType::Wifi) && secret => RowCopy::Secret,
+        _ => RowCopy::Menu,
+    }
 }
 pub(crate) fn entry_row(e: &qv_core::EntrySummary) -> EntryRow {
     EntryRow {
@@ -112,6 +160,7 @@ pub(crate) fn entry_row(e: &qv_core::EntrySummary) -> EntryRow {
             .map_or_else(|| z(""), |f| z(f.value.expose())),
         colour: crate::editor::colour(e.icon.as_ref().map(Text::expose)),
         conflict: e.conflict,
+        copy: row_copy(qv_core::type_bucket(e.type_key.as_str()), &e.copyable),
         kind: qv_core::type_bucket(&e.type_key),
     }
 }
@@ -321,10 +370,13 @@ pub fn quick_fields(
     if v.versions > 1 {
         return Ok((None, None));
     }
+    let plain = |f: &&FieldRow| !f.protected && f.kind != FieldKind::Totp;
     let user = v
         .fields
         .iter()
-        .find(|f| !f.protected && f.kind != FieldKind::Totp)
+        .filter(plain)
+        .find(|f| f.kind != FieldKind::Url)
+        .or_else(|| v.fields.iter().find(plain))
         .map(|f| f.handle);
     let secret = v
         .fields
@@ -1517,6 +1569,82 @@ mod tests {
         assert_eq!(
             super::date(qv_core::Timestamp(951_782_400_000 + 3_661_000)),
             "2000-02-29 01:01 UTC"
+        );
+    }
+}
+
+#[cfg(test)]
+mod row_copy_tests {
+    use super::{RowCopy, row_copy};
+    use qv_core::{CopyField, FieldKind, Text};
+
+    fn f(name: &str, kind: FieldKind, protected: bool) -> CopyField {
+        CopyField {
+            name: Text::new(name).unwrap(),
+            kind,
+            protected,
+        }
+    }
+
+    // Plan 0063: standard layouts keep their buttons, anything else with
+    // fields gets the menu, and no fields means no copy button.
+    #[test]
+    fn row_copy_follows_the_fields() {
+        use FieldKind::{Secret, Text as Plain, Url};
+        assert_eq!(row_copy("note", &[]), RowCopy::None);
+        assert_eq!(row_copy("login", &[]), RowCopy::None);
+        let login = [
+            f("Username", Plain, false),
+            f("Password", Secret, true),
+            f("Website", Url, false),
+        ];
+        assert_eq!(
+            row_copy("login", &login),
+            RowCopy::Pair {
+                user: true,
+                secret: true
+            }
+        );
+        assert_eq!(
+            row_copy("login", &[f("Password", Secret, true)]),
+            RowCopy::Pair {
+                user: false,
+                secret: true
+            }
+        );
+        // A custom field makes it a layout of its own.
+        let custom = [
+            f("Username", Plain, false),
+            f("Password", Secret, true),
+            f("PIN", Secret, true),
+        ];
+        assert_eq!(row_copy("login", &custom), RowCopy::Menu);
+        // Only a website: nothing for the pair to copy, so the menu.
+        assert_eq!(
+            row_copy("login", &[f("Website", Url, false)]),
+            RowCopy::Menu
+        );
+        let wifi = [
+            f("Network name", Plain, false),
+            f("Password", Secret, true),
+            f("Security", Plain, false),
+        ];
+        assert_eq!(row_copy("wifi", &wifi), RowCopy::Secret);
+        assert_eq!(
+            row_copy("wifi", &[f("Network name", Plain, false)]),
+            RowCopy::Menu
+        );
+        let card = [
+            f("Name on card", Plain, false),
+            f("Card number", Secret, true),
+            f("Expires", Plain, false),
+            f("Security code", Secret, true),
+        ];
+        assert_eq!(row_copy("card", &card), RowCopy::Menu);
+        assert_eq!(row_copy("note", &[f("Code", Plain, false)]), RowCopy::Menu);
+        assert_eq!(
+            row_copy("other", &[f("Username", Plain, false)]),
+            RowCopy::Menu
         );
     }
 }

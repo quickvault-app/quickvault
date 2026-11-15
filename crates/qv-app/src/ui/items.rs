@@ -324,7 +324,7 @@ pub(crate) fn ListPane(
     };
     // A card row's copy button and, while open, its menu of the card's
     // fields (no values shown): each copies through the app's clipboard.
-    let card_copy = |id: String, h: EntryHandle| -> Element {
+    let card_copy = |id: String, h: EntryHandle, card: bool| -> Element {
         let open = copy_menu().as_deref() == Some(id.as_str());
         let fields = if open {
             controller
@@ -336,31 +336,39 @@ pub(crate) fn ListPane(
             Vec::new()
         };
         let icon = |f: &FieldRow| {
-            if f.name.as_str() == crate::editor::CARD_NUMBER {
+            if card && f.name.as_str() == crate::editor::CARD_NUMBER {
                 Icon::Card
-            } else if f.name.as_str() == crate::editor::EXPIRES {
+            } else if card && f.name.as_str() == crate::editor::EXPIRES {
                 Icon::Clock
-            } else if f.protected {
+            } else if card && f.protected {
                 Icon::Shield
-            } else {
+            } else if f.protected {
+                Icon::Key
+            } else if f.kind == FieldKind::Url {
+                Icon::Globe
+            } else if card {
                 Icon::User
+            } else {
+                Icon::Copy
             }
         };
+        // The menu is the row's own child, like the right-click menu, so
+        // it layers above the following rows instead of under them.
         rsx! {
             span { class: if open { "quick open" } else { "quick" },
-                span { class: "pop-anchor",
-                    button { "aria-label": "Copy a card detail", title: "Copy…", "aria-haspopup": "menu", "aria-expanded": if open { "true" } else { "false" }, disabled: form,
-                        onclick: { let id = id.clone(); move |e: MouseEvent| { e.stop_propagation(); copy_menu.set(if copy_menu().as_deref() == Some(id.as_str()) { None } else { Some(id.clone()) }); } },
-                        Svg { icon: Icon::Copy }
-                    }
-                    if open {
-                        button { class: "pop-scrim", "aria-label": "Close menu", tabindex: "-1", onclick: move |e: MouseEvent| { e.stop_propagation(); copy_menu.set(None); } }
-                        div { class: "menu pop end", role: "menu", "aria-label": "Copy",
-                            for f in fields.iter().filter(|f| f.kind != FieldKind::Totp) {
-                                button { class: "mi", role: "menuitem",
-                                    onclick: { let c = controller.clone(); let fh = f.handle; move |e: MouseEvent| { e.stop_propagation(); copy_menu.set(None); c.act(epoch, WsAction::Copy(CopyKey::Field(h, fh))); } },
-                                    Svg { icon: icon(f) } "Copy {f.name.as_str()}"
-                                }
+                button { "aria-label": if card { "Copy a card detail" } else { "Copy a field" }, title: "Copy…", "aria-haspopup": "menu", "aria-expanded": if open { "true" } else { "false" }, disabled: form,
+                    onclick: { let id = id.clone(); move |e: MouseEvent| { e.stop_propagation(); copy_menu.set(if copy_menu().as_deref() == Some(id.as_str()) { None } else { Some(id.clone()) }); } },
+                    Svg { icon: Icon::Copy }
+                }
+            }
+            if open {
+                button { class: "pop-scrim", "aria-label": "Close menu", tabindex: "-1", onclick: move |e: MouseEvent| { e.stop_propagation(); copy_menu.set(None); } }
+                div { class: "card-menu",
+                    div { class: "menu pop end", role: "menu", "aria-label": "Copy",
+                        for f in fields.iter().filter(|f| f.kind != FieldKind::Totp) {
+                            button { class: "mi", role: "menuitem",
+                                onclick: { let c = controller.clone(); let fh = f.handle; move |e: MouseEvent| { e.stop_propagation(); copy_menu.set(None); c.act(epoch, WsAction::Copy(CopyKey::Field(h, fh))); } },
+                                Svg { icon: icon(f) } "Copy “{f.name.as_str()}”"
                             }
                         }
                     }
@@ -692,15 +700,26 @@ pub(crate) fn ListPane(
                                 span { if row.subtitle.is_empty() { "{kind_label(row.kind)}" } else { "{row.subtitle.as_str()}" } }
                             }
                             if row.conflict { span { class: "cbadge", "conflict" } }
-                            if !in_selection && row.kind == "card" {
-                                // Cards: one copy button listing the card's
-                                // fields in checkout order (plan 0063).
-                                {card_copy(id.clone(), h)}
-                            } else if !in_selection {
-                            span { class: "quick",
-                                if !row.subtitle.is_empty() { button { "aria-label": "Copy the first field", title: "Copy {row.subtitle.as_str()}", disabled: form, onclick: quick(row.handle, false), Svg { icon: Icon::User } } }
-                                button { "aria-label": "Copy the protected field", title: "Copy password", disabled: form, onclick: quick(row.handle, true), Svg { icon: Icon::Key } }
-                            }
+                            // What the row copies follows its fields (plan
+                            // 0063): a standard login its username and
+                            // password, a standard Wi-Fi its password, any
+                            // other layout with fields one menu, none nothing.
+                            if !in_selection {
+                                match row.copy {
+                                    views::RowCopy::None => rsx! {},
+                                    views::RowCopy::Menu => card_copy(id.clone(), h, row.kind == "card"),
+                                    views::RowCopy::Secret => rsx! {
+                                        span { class: "quick",
+                                            button { "aria-label": "Copy the password", title: "Copy password", disabled: form, onclick: quick(row.handle, true), Svg { icon: Icon::Key } }
+                                        }
+                                    },
+                                    views::RowCopy::Pair { user, secret } => rsx! {
+                                        span { class: "quick",
+                                            if user { button { "aria-label": "Copy the username", title: "Copy username", disabled: form, onclick: quick(row.handle, false), Svg { icon: Icon::User } } }
+                                            if secret { button { "aria-label": "Copy the password", title: "Copy password", disabled: form, onclick: quick(row.handle, true), Svg { icon: Icon::Key } } }
+                                        }
+                                    },
+                                }
                             }
                             if menu_open {
                                 button { class: "pop-scrim", "aria-label": "Close menu", tabindex: "-1", onclick: move |_| row_menu.set(None),
@@ -709,9 +728,29 @@ pub(crate) fn ListPane(
                                 div { class: "row-menu",
                                     div { class: "menu pop end", role: "menu", "aria-label": "{row.title.as_str()}",
                                         button { class: "mi", role: "menuitem", id: "row-open", onclick: { let c = controller.clone(); move |_| { row_menu.set(None); c.select(epoch, Screen::Entry(h)); } }, Svg { icon: Icon::Right } "Open" }
-                                        if !row.subtitle.is_empty() { button { class: "mi", role: "menuitem", onclick: { let f = quick(h, false); move |e| { row_menu.set(None); f(e) } }, Svg { icon: Icon::User } "Copy {row.subtitle.as_str()}" } }
-                                        button { class: "mi", role: "menuitem", id: "row-copy-password", onclick: { let f = quick(h, true); move |e| { row_menu.set(None); f(e) } }, Svg { icon: Icon::Key } "Copy password" }
-                                        hr {}
+                                        // The same copies as the row's buttons (plan 0063).
+                                        match row.copy {
+                                            views::RowCopy::None => rsx! {},
+                                            views::RowCopy::Pair { user, secret } => rsx! {
+                                                if user { button { class: "mi", role: "menuitem", onclick: { let f = quick(h, false); move |e| { row_menu.set(None); f(e) } }, Svg { icon: Icon::User } "Copy “Username”" } }
+                                                if secret { button { class: "mi", role: "menuitem", id: "row-copy-password", onclick: { let f = quick(h, true); move |e| { row_menu.set(None); f(e) } }, Svg { icon: Icon::Key } "Copy “Password”" } }
+                                            },
+                                            views::RowCopy::Secret => rsx! {
+                                                button { class: "mi", role: "menuitem", id: "row-copy-password", onclick: { let f = quick(h, true); move |e| { row_menu.set(None); f(e) } }, Svg { icon: Icon::Key } "Copy “Password”" }
+                                            },
+                                            views::RowCopy::Menu => {
+                                                let fields = controller.read(epoch, |s| views::entry(s, h)).and_then(Result::ok).map(|v| v.fields).unwrap_or_default();
+                                                rsx! {
+                                                    for f in fields.into_iter().filter(|f| f.kind != FieldKind::Totp) {
+                                                        button { class: "mi", role: "menuitem",
+                                                            onclick: { let c = controller.clone(); let fh = f.handle; move |_| { row_menu.set(None); c.act(epoch, WsAction::Copy(CopyKey::Field(h, fh))); } },
+                                                            Svg { icon: if f.protected { Icon::Key } else { Icon::Copy } } "Copy “{f.name.as_str()}”"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if row.copy != views::RowCopy::None { hr {} }
                                         div { class: "label", "COLOR" }
                                         div { class: "ie-swatches",
                                             for n in 0..crate::editor::HUES {

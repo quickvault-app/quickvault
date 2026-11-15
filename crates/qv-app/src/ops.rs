@@ -319,7 +319,8 @@ pub(crate) fn run(
                             }
                             let notes = crate::views::entry(session, *entry)?
                                 .notes
-                                .ok_or(AppError::InvalidInput)?;
+                                .filter(|n| !n.is_empty())
+                                .ok_or(AppError::NothingToCopy)?;
                             protect(notes.as_bytes())?
                         }
                     };

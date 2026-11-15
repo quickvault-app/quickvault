@@ -59,6 +59,16 @@ pub struct FieldSummary {
     pub value: Text,
 }
 
+/// A copyable field of a listed entry: what a copy control names.
+pub struct CopyField {
+    /// The field's name.
+    pub name: Text,
+    /// Its kind.
+    pub kind: FieldKind,
+    /// Whether its value is protected.
+    pub protected: bool,
+}
+
 /// An entry in a listing.
 pub struct EntrySummary {
     /// The entry.
@@ -73,6 +83,9 @@ pub struct EntrySummary {
     pub icon: Option<Text>,
     /// Its non-protected text, URL and e-mail fields, in order.
     pub fields: Vec<FieldSummary>,
+    /// Every copyable (text, non-TOTP) field's name, kind and protection, in
+    /// order; no protected value (plan 0063).
+    pub copyable: Vec<CopyField>,
     /// When it was last modified (display only).
     pub modified_at: Timestamp,
     /// When it expires.
@@ -342,6 +355,17 @@ pub(crate) fn entry_summary(
                     name: copy(&f.name)?,
                     kind: f.kind,
                     value: copy(&f.value)?,
+                })
+            })
+            .collect::<Result<_, CoreError>>()?,
+        copyable: e
+            .copyable
+            .iter()
+            .map(|f| {
+                Ok(CopyField {
+                    name: copy(&f.name)?,
+                    kind: f.kind,
+                    protected: f.protected,
                 })
             })
             .collect::<Result<_, CoreError>>()?,

@@ -264,6 +264,9 @@ input::-webkit-caps-lock-indicator{display:none;content:none}
 .row>.row-menu{position:absolute;right:8px;top:100%;z-index:40;pointer-events:auto}
 .row-menu .menu.pop{top:4px}
 .row>.pop-scrim{position:fixed;inset:0;z-index:39;pointer-events:auto}
+/* A card row's copy menu (plan 0063): like the row menu, on phones too. */
+.row>.card-menu{position:absolute;right:8px;top:100%;z-index:40;pointer-events:auto}
+.card-menu .menu.pop{top:4px}
 .ph-row{display:flex;align-items:baseline;gap:10px}
 .ph-row h2{flex:1}
 .ph-row .link{font-size:15px}

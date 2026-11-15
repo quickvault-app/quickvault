@@ -174,6 +174,8 @@ pub enum AppError {
     /// A LAN code or address that cannot be used (missing, malformed, or a
     /// typed code without an address).
     LanInput,
+    /// The item has nothing to copy there (an empty note, plan 0063).
+    NothingToCopy,
     /// Quick unlock failed; it may still work (plan 0045), with the step
     /// that refused it when known (plan 0063).
     QuickFailed(Option<qv_core::QuickFailure>),
@@ -302,6 +304,7 @@ impl AppError {
             Self::PreviewUnavailable => {
                 "This file can't be previewed. Save a copy to open it elsewhere."
             }
+            Self::NothingToCopy => "There is nothing to copy: this item has no notes.",
             // The step that refused quick unlock, when known (plan 0063).
             Self::QuickFailed(why) => quick_message!(
                 "Fingerprint unlock didn't work. Try again, or use your master password.",

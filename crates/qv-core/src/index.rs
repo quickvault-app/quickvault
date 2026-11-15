@@ -31,12 +31,22 @@ pub(crate) struct FieldInfo {
     pub(crate) value: Text,
 }
 
+/// One copyable field as listings show it: name, kind and whether it is
+/// protected, never a protected value (plan 0063).
+pub(crate) struct CopyInfo {
+    pub(crate) name: Text,
+    pub(crate) kind: FieldKind,
+    pub(crate) protected: bool,
+}
+
 pub(crate) struct EntryInfo {
     pub(crate) title: Text,
     pub(crate) type_hint: Text,
     pub(crate) icon: Option<Text>,
     pub(crate) group: RecordId,
     pub(crate) fields: Vec<FieldInfo>,
+    /// Every text field except TOTP, in order: the row's copy controls.
+    pub(crate) copyable: Vec<CopyInfo>,
     pub(crate) modified_at: Timestamp,
     pub(crate) expires_at: Option<Timestamp>,
     pub(crate) deleted_at: Option<Timestamp>,
@@ -158,6 +168,10 @@ impl ViewData {
                         .iter()
                         .map(|f| f.name.allocated_bytes() + f.value.allocated_bytes())
                         .sum::<usize>()
+                    + e.copyable
+                        .iter()
+                        .map(|f| f.name.allocated_bytes())
+                        .sum::<usize>()
             }
             Self::Group(g) => {
                 g.name.allocated_bytes() + opt_len(g.icon.as_ref()) + g.order.allocated_bytes()
@@ -208,7 +222,15 @@ fn extract(v: RecordVersion) -> Result<ViewData, CoreError> {
     Ok(match v.body {
         RecordBody::Live(Payload::Entry(e)) => {
             let mut fields = Vec::new();
+            let mut copyable = Vec::new();
             for f in &e.fields {
+                if f.kind != FieldKind::Totp && matches!(f.value, FieldValue::Text(_)) {
+                    copyable.push(CopyInfo {
+                        name: copy(&f.name)?,
+                        kind: f.kind,
+                        protected: f.protected,
+                    });
+                }
                 if let (true, FieldValue::Text(s)) = (searchable(f.protected, f.kind), &f.value) {
                     fields.push(FieldInfo {
                         name: copy(&f.name)?,
@@ -223,6 +245,7 @@ fn extract(v: RecordVersion) -> Result<ViewData, CoreError> {
                 icon: e.icon,
                 group: e.group,
                 fields,
+                copyable,
                 modified_at: e.modified_at,
                 expires_at: e.expires_at,
                 deleted_at: e.deleted_at,
@@ -889,9 +912,30 @@ pub(crate) mod tests {
             .map(|f| f.value.expose().to_owned())
             .collect();
         assert_eq!(kept, ["alice", "https://example.org"]);
+        // Every text field's name, kind and protection, never a protected
+        // value, for the row's copy controls (plan 0063).
+        let layout: Vec<_> = e
+            .copyable
+            .iter()
+            .map(|f| (f.name.expose().to_owned(), f.protected))
+            .collect();
+        assert_eq!(
+            layout,
+            [
+                ("Username".to_owned(), false),
+                ("Password".to_owned(), true),
+                ("Site".to_owned(), false),
+                ("PIN".to_owned(), true),
+                ("Memo".to_owned(), false),
+            ]
+        );
         assert_eq!(
             live.bytes,
-            "Bank".len() + "login".len() + "Usernamealice".len() + "Sitehttps://example.org".len()
+            "Bank".len()
+                + "login".len()
+                + "Usernamealice".len()
+                + "Sitehttps://example.org".len()
+                + "UsernamePasswordSitePINMemo".len()
         );
 
         // Soft-deleted: in the trash.

@@ -167,9 +167,9 @@ pub use snapshot::{
 };
 pub use strength::{PasswordCheck, PasswordVerdict, confirmation_positions, password_strength};
 pub use views::{
-    ConflictSummary, EntryDetail, EntrySummary, ExpiryReport, ExpirySummary, FieldDetail,
-    FieldSummary, GroupDetail, GroupSummary, Listing, MAX_QUERY_BYTES, Overview, SearchHit,
-    TotpNow, TrashItem, is_display_control,
+    ConflictSummary, CopyField, EntryDetail, EntrySummary, ExpiryReport, ExpirySummary,
+    FieldDetail, FieldSummary, GroupDetail, GroupSummary, Listing, MAX_QUERY_BYTES, Overview,
+    SearchHit, TotpNow, TrashItem, is_display_control,
 };
 
 // What frontends need from the lower crates, so that they depend on

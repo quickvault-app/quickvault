@@ -138,3 +138,28 @@ chips; the last group per vault, encrypted per-device note).
 - 2026-11-15: owner: fingerprint unlock worked on this build. Root cause not
   confirmed; the likeliest was the transient header read misreported as
   "off". A recurrence now names its step.
+- 2026-11-15: owner (desktop screenshot): the card copy menu opened behind
+  the following rows and the sidebar: nested in the row's `.quick` (a z-index 1
+  layer), it could not rise above later rows. It is now a direct row child
+  (`.card-menu`, z-index 40, like `.row-menu` but shown on phones too).
+- 2026-11-15: row copy controls per type (owner agreed): login keeps
+  username + password; card and other use the field menu (other: key for
+  protected, globe for URLs, copy otherwise); Wi-Fi a password button; note
+  a "Copy notes" button (an empty note says there is nothing to copy,
+  `AppError::NothingToCopy`).
+- 2026-11-15: owner rule: the menu is for any non-standard layout (a
+  custom field) or many fields (cards); no fields, no button; labels quote
+  the field name. The index and entry summaries now carry each copyable
+  field's name, kind and protection (`CopyInfo`/`CopyField`, counted in
+  view and page bytes; no protected value), and `RowCopy` (None, Pair,
+  Secret, Menu) is decided per row from them (`row_copy`, unit-tested).
+  The notes row button was dropped (no fields, no button); the Notes card
+  keeps its Copy. `quick_fields` prefers a non-URL field as the username.
+- 2026-11-15: qv-core lib: 156 passed, 1 failed (`index_record_states` pins an
+  entry's index bytes; the copyable names add 27). Updated it to count them and
+  to check the layout (names, protection, no protected values); index
+  tests pass. APK built and installed; Gradle daemon stopped.
+- 2026-11-15: owner: right-clicking a note still offered "Copy password". The
+  row menu now follows `RowCopy` too: username/password for a standard
+  login, password for a standard Wi-Fi, the quoted field list for a menu
+  layout, and no copy items without fields.

@@ -1023,9 +1023,12 @@ Dates are ISO 8601. Newest first within each section.
   scan; plan 0063).
 - 2026-11-15: Notes wrap long words instead of cutting them off, and have a
   Copy button (the app cancels browser copies so that every copy goes
-  through its self-clearing clipboard). Card rows offer one copy button
-  that lists the card's fields (name, number, expiry, security code)
-  instead of "username" and "password" buttons (owner QA, plan 0063).
+  through its self-clearing clipboard). List rows copy what fits each item
+  (owner QA, plan 0063): a login with only its standard fields keeps
+  username and password, a standard Wi-Fi copies its password, and any
+  other item with fields (cards, a login with a custom field, notes or
+  "Other" items with fields) has one copy button listing them, as Copy
+  “Expires”. Items without fields show no copy button.
 - 2026-11-15: Phone and sync polish from owner QA (plan 0062): Android Back
   now cancels the sync code window (it used to ask to close the app); once
   the other device connects, the code window says "Connected to another
