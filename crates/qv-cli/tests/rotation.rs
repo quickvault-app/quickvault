@@ -149,15 +149,6 @@ fn rotation_with_typed_confirmation_and_phrase_check() {
     create(&h);
     let ls = run(&h, PASSWORD, &["snapshot", "ls"]);
     assert_eq!(ls.code, 0, "{}", ls.stderr);
-    let old_id = std::fs::read_dir(h.snapshots())
-        .unwrap()
-        .map(|e| e.unwrap().file_name().into_string().unwrap())
-        .find_map(|f| {
-            f.strip_suffix(".qvsnap")
-                .filter(|id| id.len() == 32)
-                .map(str::to_owned)
-        })
-        .unwrap();
     // `--yes` does not skip the typed confirmation: the prompt still came.
     let (mut p, words, at) = up_to_phrase(&h, true);
     let at = confirm_words(&mut p, &words, at);
@@ -169,6 +160,17 @@ fn rotation_with_typed_confirmation_and_phrase_check() {
     assert_eq!(code, 0, "{text}");
     assert!(text.contains("open only with the old recovery phrase"));
     assert_eq!(reserved(&h), 0);
+    // The rotation's recovery copy is a file of the old generation.
+    let old_id = std::fs::read_dir(h.snapshots())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .find_map(|f| {
+            let f = f.strip_prefix("recover-").unwrap_or(&f).to_owned();
+            f.strip_suffix(".qvsnap")
+                .filter(|id| id.len() == 32)
+                .map(str::to_owned)
+        })
+        .unwrap();
 
     assert_eq!(run(&h, NEW, &["ls"]).code, 0);
     assert_eq!(run(&h, PASSWORD, &["ls"]).code, 3);

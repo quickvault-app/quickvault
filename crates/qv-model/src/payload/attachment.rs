@@ -32,8 +32,8 @@ use crate::text::{Extensions, Text};
 
 /// Attachment content chunk size (0003 §6.2).
 pub const CHUNK_SIZE: u64 = 64 * 1024;
-/// The initial client maximum attachment size (0003 §6.3).
-pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+/// The client maximum attachment size (0003 §6.3; 2 GiB, plan 0059).
+pub const MAX_ATTACHMENT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// The most chunks an attachment can have.
 const MAX_CHUNKS: usize = (MAX_ATTACHMENT_BYTES / CHUNK_SIZE) as usize;
 

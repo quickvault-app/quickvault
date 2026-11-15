@@ -103,6 +103,10 @@ pub(crate) fn install(controller: &Controller) -> Result<(), AppError> {
             "e-long-gop.mp4",
             include_bytes!("../tests/fixtures/preview-long-gop.mp4").as_slice(),
         ),
+        (
+            "f-long.mp4",
+            include_bytes!("../tests/fixtures/preview-long.mp4").as_slice(),
+        ),
     ] {
         session.add_attachment(entry, name, "wrong/type", &mut &bytes[..], None)?;
     }

@@ -198,6 +198,17 @@ pub(crate) fn picked_for(create: bool) -> Option<i64> {
     let (id, kind) = (*PICK.lock().ok()?)?;
     (kind == create && ready(id)).then_some(id)
 }
+/// The chosen document's size as its provider reports it, for a large-file
+/// warning only (plan 0059); `None` when unknown. Reading stays bounded.
+pub(crate) fn picked_size() -> Option<u64> {
+    let (id, _) = (*PICK.lock().ok()?)?;
+    if !ready(id) {
+        return None;
+    }
+    call(|env, a| env.call_method(a, "qvPickedSize", "()J", &[])?.j())
+        .ok()
+        .and_then(|n| u64::try_from(n).ok())
+}
 /// The chosen document's display name, shown as untrusted escaped text.
 pub(crate) fn picked_name() -> Option<String> {
     let (id, _) = (*PICK.lock().ok()?)?;

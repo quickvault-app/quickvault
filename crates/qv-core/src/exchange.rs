@@ -11,7 +11,6 @@ use qv_store::{ArchiveScope, SnapshotDir, SnapshotKind, VerifiedIncoming};
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 use crate::index::{Index, MAX_VIEW_BYTES};
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
-use crate::snapshot::{begin_recovery, finish_recovery};
 use crate::{CancelToken, CoreError, Session};
 
 /// Actual local acceptance, independently of anchor-completion errors.
@@ -47,22 +46,20 @@ redacted!(ArchiveMergeReport, ArchiveExportReport);
 
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 impl Session {
-    /// Authenticate a stable archive, take a mandatory recovery copy, and merge
-    /// complete versions without resolving conflicts or adopting password slots.
-    /// `allow_over_budget` requires explicit consent to the recovery-copy size.
+    /// Authenticate a stable archive and merge complete versions without
+    /// resolving conflicts or adopting password slots. The merge commit keeps
+    /// the pre-merge state as a recovery snapshot (0007 §3.2, plan 0059).
     pub fn merge_archive(
         &self,
         source: &Path,
-        allow_over_budget: bool,
         cancel: Option<&CancelToken>,
     ) -> Result<ArchiveMergeReport, CoreError> {
-        self.merge_archive_with_budget(source, allow_over_budget, cancel, MAX_VIEW_BYTES)
+        self.merge_archive_with_budget(source, cancel, MAX_VIEW_BYTES)
     }
 
     fn merge_archive_with_budget(
         &self,
         source: &Path,
-        allow_over_budget: bool,
         cancel: Option<&CancelToken>,
         view_budget: usize,
     ) -> Result<ArchiveMergeReport, CoreError> {
@@ -92,8 +89,7 @@ impl Session {
                 }
             })?;
             let now = ctx.now();
-            let recovery = begin_recovery(ctx.open, now, allow_over_budget, &cancelled)
-                .map_err(|e| if cancelled() { CoreError::Cancelled } else { e })?;
+            crate::snapshot::arm_recovery(ctx.open, now);
             let before = ctx.open.vault.local_seq();
             let mut proposed = None;
             let mut preflight_error = None;
@@ -147,10 +143,7 @@ impl Session {
                     }
                 }));
             }
-            let mut completion_error = result.err().map(Into::into);
-            if completion_error.is_none() {
-                completion_error = finish_recovery(ctx.open, recovery).err();
-            }
+            let completion_error = result.err().map(Into::into);
             Ok(ArchiveMergeReport {
                 accepted,
                 conflicts: ctx
@@ -214,7 +207,6 @@ impl Session {
     pub fn merge_archive(
         &self,
         _source: &Path,
-        _allow_over_budget: bool,
         _cancel: Option<&CancelToken>,
     ) -> Result<ArchiveMergeReport, CoreError> {
         Err(StoreError::Unsupported.into())

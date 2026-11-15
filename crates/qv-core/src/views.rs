@@ -976,7 +976,7 @@ mod tests {
         assert!(s.find_id(&g_id, false).unwrap().is_empty());
         assert_eq!(s.find_id(&g_id, true).unwrap(), [ItemHandle::Entry(gone)]);
         assert!(s.find_id(&id, true).unwrap().is_empty());
-        crate::testutil::destructive(&s, || s.purge(&[ItemHandle::Entry(gone)])).unwrap();
+        s.purge(&[ItemHandle::Entry(gone)], false).unwrap();
         assert!(s.find_id(&g_id, true).unwrap().is_empty());
         assert!(s.find_id(&g_id, false).unwrap().is_empty());
     }

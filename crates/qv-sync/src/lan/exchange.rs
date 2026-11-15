@@ -33,7 +33,7 @@ use qv_protocol::lan::{
 };
 use qv_protocol::registry::check_features;
 use qv_store::{
-    LanServeState, LanStaging, MAX_OBJECTS, Planned, StagedKeyslot, VerifiedLanStaging,
+    LanServeState, LanStaging, MAX_REFERENCES, Planned, StagedKeyslot, VerifiedLanStaging,
 };
 #[cfg(test)]
 use zeroize::Zeroizing;
@@ -252,7 +252,7 @@ fn send_wants(ch: &mut Channel<'_>, ids: &[ObjectId], t: &LanTimeouts) -> Result
 
 /// Receives the peer's requests against `state` (§7.4): each ID in the
 /// served manifest, no duplicates, an empty `Want` only as the last, at
-/// most 62 messages and 250,000 IDs.
+/// most 94 messages and 381,072 IDs.
 fn recv_wants(
     ch: &mut Channel<'_>,
     state: &LanServeState,
@@ -271,7 +271,7 @@ fn recv_wants(
             if !state.contains(id) || !seen.insert(id) {
                 return Err(LanError::Protocol);
             }
-            if requested.len() >= MAX_OBJECTS {
+            if requested.len() >= MAX_REFERENCES {
                 return Err(LanError::Limit);
             }
             requested.push(id);
@@ -306,20 +306,26 @@ fn receive_objects(
     staging: &mut LanStaging,
     t: &LanTimeouts,
 ) -> Result<(), LanError> {
-    while let Some(next) = staging.next() {
-        match (next, vault) {
-            (Planned::Local, Some(v)) => v.stage_local(staging)?,
-            (Planned::Local, None) => return Err(LanError::Protocol),
-            (Planned::Peer, _) => {
-                let msg = ch.recv(t.idle, None)?;
-                let object = ObjectMsg::decode(msg.expose_secret()).map_err(bad)?;
-                staging
-                    .add_object(object.envelope)
-                    .map_err(LanError::from_staging)?;
+    super::set_progress(staging.peer_bytes());
+    let result = (|| {
+        while let Some(next) = staging.next() {
+            match (next, vault) {
+                (Planned::Local, Some(v)) => v.stage_local(staging)?,
+                (Planned::Local, None) => return Err(LanError::Protocol),
+                (Planned::Peer, _) => {
+                    let msg = ch.recv(t.idle, None)?;
+                    let object = ObjectMsg::decode(msg.expose_secret()).map_err(bad)?;
+                    staging
+                        .add_object(object.envelope)
+                        .map_err(LanError::from_staging)?;
+                    super::set_progress(staging.peer_bytes());
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })();
+    super::set_progress((0, 0));
+    result
 }
 
 fn send_done(

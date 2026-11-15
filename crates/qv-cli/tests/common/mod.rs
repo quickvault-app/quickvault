@@ -128,6 +128,17 @@ impl Home {
             .session
     }
 
+    /// Unlocks `vault()` with the CLI's snapshot directory as its policy.
+    #[allow(dead_code)] // Not every test binary uses it.
+    pub fn unlock_with_snapshots(&self) -> Session {
+        let _s = serial();
+        let policy =
+            qv_core::SnapshotPolicy::new(qv_core::SnapshotDir::open(&self.snapshots()).unwrap());
+        Core::new(CoreConfig::new(AnchorDir::open(&self.anchors()).unwrap()).with_snapshots(policy))
+            .unlock(&self.vault(), &pw(PASSWORD), None)
+            .unwrap()
+    }
+
     /// Unlocks `vault()` in the test process.
     ///
     /// A `qv` child that another test thread is spawning shares this

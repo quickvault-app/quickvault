@@ -976,6 +976,15 @@ pub struct SnapshotRow {
     /// Bytes on disk.
     pub size: u64,
 }
+/// A size for people: bytes, KB, MB or GB.
+pub fn human_size(n: u64) -> String {
+    match n {
+        0..1_000 => format!("{n} bytes"),
+        1_000..1_000_000 => format!("{:.0} KB", n as f64 / 1_000.0),
+        1_000_000..1_000_000_000 => format!("{:.1} MB", n as f64 / 1_000_000.0),
+        _ => format!("{:.2} GB", n as f64 / 1_000_000_000.0),
+    }
+}
 /// Read local snapshots and the unreadable count.
 pub fn snapshots(s: &Session) -> Result<(Vec<SnapshotRow>, u64), CoreError> {
     let l = s.snapshots()?;

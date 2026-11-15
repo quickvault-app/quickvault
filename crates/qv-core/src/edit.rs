@@ -659,13 +659,16 @@ fn deleted_with(
 }
 
 /// Final deletion of trashed records and the attachments their entries
-/// own (0007 §2.2).
-fn purge_in(ctx: &mut Ctx<'_>, items: &[(RecordId, RecordKind)]) -> Result<(), CoreError> {
-    if !items.is_empty() {
-        if ctx.open.read_only {
-            return Err(qv_store::StoreError::NoAnchor.into());
-        }
-        crate::snapshot::require_recovery(ctx)?;
+/// own (0007 §2.2). It takes no recovery copy; unless `keep_snapshots`, the
+/// same commit removes the snapshots that hold any of them and keeps none
+/// (0007 §3.2–3.3, plan 0059).
+fn purge_in(
+    ctx: &mut Ctx<'_>,
+    items: &[(RecordId, RecordKind)],
+    keep_snapshots: bool,
+) -> Result<(), CoreError> {
+    if !items.is_empty() && ctx.open.read_only {
+        return Err(qv_store::StoreError::NoAnchor.into());
     }
     let index = &ctx.open.index;
     let entries: BTreeSet<RecordId> = items
@@ -683,7 +686,8 @@ fn purge_in(ctx: &mut Ctx<'_>, items: &[(RecordId, RecordKind)]) -> Result<(), C
             targets.insert(*id, RecordKind::AttachmentMeta);
         }
     }
-    let changes = targets
+    let records: Vec<RecordId> = targets.keys().copied().collect();
+    let changes: Vec<Change> = targets
         .into_iter()
         .map(|(record, kind)| Change {
             record,
@@ -693,7 +697,32 @@ fn purge_in(ctx: &mut Ctx<'_>, items: &[(RecordId, RecordKind)]) -> Result<(), C
             ext: Extensions::new(),
         })
         .collect();
-    commit(ctx, changes)
+    commit_deleting(ctx, changes, records, keep_snapshots)
+}
+
+/// Commits a permanent deletion of `records` (0007 §3.3): unless
+/// `keep_snapshots`, the snapshots holding any of them go in the same commit,
+/// and the commit keeps no new one.
+pub(crate) fn commit_deleting(
+    ctx: &mut Ctx<'_>,
+    changes: Vec<Change>,
+    records: Vec<RecordId>,
+    keep_snapshots: bool,
+) -> Result<(), CoreError> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+    commit_with(
+        ctx,
+        |w| {
+            if !keep_snapshots {
+                w.keep_no_snapshot();
+                w.remove_snapshots_containing(records);
+            }
+            Ok(changes)
+        },
+        &|| false,
+    )
 }
 
 /// What [`Session::empty_trash`] did.
@@ -1023,8 +1052,10 @@ impl Session {
     /// tombstone, its history is dropped, and an entry's attachments are
     /// tombstoned too, all in one transaction. Every item must be in the
     /// trash ([`CoreError::NotAllowed`]) and free of conflicts
-    /// ([`CoreError::Conflict`]). Frontends confirm before calling this.
-    pub fn purge(&self, items: &[ItemHandle]) -> Result<(), CoreError> {
+    /// ([`CoreError::Conflict`]). Frontends confirm before calling this,
+    /// naming [`Session::snapshots_holding`]; unless `keep_snapshots`, those
+    /// snapshots are removed in the same commit (0007 §3.3).
+    pub fn purge(&self, items: &[ItemHandle], keep_snapshots: bool) -> Result<(), CoreError> {
         self.mutate(|ctx| {
             let mut targets = BTreeMap::new();
             for &item in items {
@@ -1032,20 +1063,15 @@ impl Session {
                 targets.insert(id, kind);
             }
             let list: Vec<(RecordId, RecordKind)> = targets.into_iter().collect();
-            purge_in(ctx, &list)
+            purge_in(ctx, &list, keep_snapshots)
         })
     }
 
     /// Finally deletes every non-conflicted item in the trash. Conflicted
-    /// items stay and are counted (0005 §2.5).
-    ///
-    /// This is only the vault half of the destructive operation: the caller
-    /// must write and pin its recovery snapshot with
-    /// [`Session::begin_destructive`] first and reclassify it with
-    /// [`Session::finish_destructive`] after this returns (0007 §3.2; the CLI
-    /// provides that flow). Core enforces a verified copy of the exact current
-    /// state before destroying data. Soft deletes take no snapshot.
-    pub fn empty_trash(&self) -> Result<PurgeReport, CoreError> {
+    /// items stay and are counted (0005 §2.5). It takes no recovery copy
+    /// (0007 §3.2); unless `keep_snapshots`, the snapshots holding the
+    /// deleted items are removed in the same commit (0007 §3.3).
+    pub fn empty_trash(&self, keep_snapshots: bool) -> Result<PurgeReport, CoreError> {
         self.mutate(|ctx| {
             let mut list = Vec::new();
             let mut skipped = 0;
@@ -1060,7 +1086,7 @@ impl Session {
                 }
             }
             let purged = list.len();
-            purge_in(ctx, &list)?;
+            purge_in(ctx, &list, keep_snapshots)?;
             Ok(PurgeReport {
                 purged,
                 skipped_conflicts: skipped,
@@ -1765,7 +1791,7 @@ mod trash_tests {
         let (keep, gone) = (h(keep), h(gone));
         let before = seq(&s);
         assert_eq!(
-            err(s.purge(&[ItemHandle::Entry(keep)])),
+            err(s.purge(&[ItemHandle::Entry(keep)], false)),
             CoreError::NotAllowed
         );
         assert_eq!(seq(&s), before);
@@ -1781,10 +1807,10 @@ mod trash_tests {
         })
         .unwrap();
         assert_eq!(
-            err(s.purge(&[ItemHandle::Entry(keep)])),
+            err(s.purge(&[ItemHandle::Entry(keep)], false)),
             CoreError::Conflict
         );
-        let report = crate::testutil::destructive(&s, || s.empty_trash()).unwrap();
+        let report = s.empty_trash(false).unwrap();
         assert_eq!(
             report,
             PurgeReport {
@@ -1953,7 +1979,7 @@ mod property_tests {
             }
             _ => {
                 if j.is_multiple_of(3) {
-                    crate::testutil::destructive(s, || s.empty_trash()).unwrap();
+                    s.empty_trash(false).unwrap();
                 } else if let Some(t) = pick(
                     &s.trash()
                         .unwrap()
@@ -1962,7 +1988,7 @@ mod property_tests {
                         .collect::<Vec<_>>(),
                     i,
                 ) {
-                    ok(crate::testutil::destructive(s, || s.purge(&[t])));
+                    ok(s.purge(&[t], false));
                 }
             }
         }

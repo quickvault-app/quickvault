@@ -56,8 +56,8 @@ use zeroize::Zeroizing;
 use crate::error::StoreError;
 use crate::header::{FORMAT, Header};
 use crate::limits::{
-    MAX_CHUNKS, MAX_CLOCK_COMPONENTS, MAX_MANIFEST_CIPHERTEXT, MAX_OBJECTS, MAX_RECORD_CIPHERTEXT,
-    MAX_RECORDS, MAX_TOTAL_CIPHERTEXT,
+    MAX_CHUNK_OBJECTS, MAX_CHUNKS, MAX_CLOCK_COMPONENTS, MAX_MANIFEST_CIPHERTEXT, MAX_OBJECTS,
+    MAX_RECORD_CIPHERTEXT, MAX_RECORDS, MAX_REFERENCES, MAX_TOTAL_CIPHERTEXT,
 };
 use crate::object::Scope;
 
@@ -344,6 +344,7 @@ fn read_len(d: &mut Decoder<'_>, max: usize) -> Result<usize, StoreError> {
 #[derive(Default)]
 struct Counts {
     versions: usize,
+    chunks: usize,
     clock_components: usize,
 }
 
@@ -383,6 +384,11 @@ fn decode_version(d: &mut Decoder<'_>, counts: &mut Counts) -> Result<VersionRef
     }
     let chunks = if n == 4 && !tombstone {
         let count = read_len(d, MAX_CHUNKS)?;
+        counts.chunks = counts
+            .chunks
+            .checked_add(count)
+            .filter(|&n| n <= MAX_CHUNK_OBJECTS)
+            .ok_or(StoreError::LimitExceeded)?;
         let mut chunks = Vec::with_capacity(count);
         for _ in 0..count {
             chunks.push(read_id(d)?);
@@ -694,7 +700,7 @@ impl Manifest {
                     records = Some(list);
                 }
                 4 => {
-                    let n = read_len(&mut d, MAX_OBJECTS)?;
+                    let n = read_len(&mut d, MAX_REFERENCES)?;
                     let mut list = Vec::with_capacity(n);
                     for _ in 0..n {
                         if d.array().map_err(malformed)? != 4 {
@@ -741,7 +747,7 @@ impl Manifest {
 
     /// Every structural rule and budget (see the module docs).
     pub(crate) fn validate(&self) -> Result<(), StoreError> {
-        if self.records.len() > MAX_RECORDS || self.references.len() > MAX_OBJECTS {
+        if self.records.len() > MAX_RECORDS || self.references.len() > MAX_REFERENCES {
             return Err(StoreError::LimitExceeded);
         }
         if self
@@ -801,6 +807,7 @@ impl Manifest {
 
         let mut components = 0usize;
         let mut versions = 0usize;
+        let mut chunk_roles = 0usize;
         for r in &self.records {
             if r.heads.is_empty() {
                 return Err(StoreError::Integrity);
@@ -829,7 +836,10 @@ impl Manifest {
                     .ok_or(StoreError::LimitExceeded)?;
                 use_role(v.object_id, false)?;
                 if let Some(chunks) = &v.chunks {
-                    if chunks.len() > MAX_CHUNKS {
+                    chunk_roles = chunk_roles
+                        .checked_add(chunks.len())
+                        .ok_or(StoreError::LimitExceeded)?;
+                    if chunks.len() > MAX_CHUNKS || chunk_roles > MAX_CHUNK_OBJECTS {
                         return Err(StoreError::LimitExceeded);
                     }
                     for &c in chunks {
@@ -1743,7 +1753,7 @@ pub(crate) mod tests {
             .unwrap();
         };
         assert_eq!(
-            Manifest::decode(&over(4, MAX_OBJECTS + 1, &ref_item)).err(),
+            Manifest::decode(&over(4, MAX_REFERENCES + 1, &ref_item)).err(),
             Some(StoreError::LimitExceeded)
         );
         // 257 heads in one record.
@@ -1772,13 +1782,13 @@ pub(crate) mod tests {
             Manifest::decode(&heads).err(),
             Some(StoreError::LimitExceeded)
         );
-        // 161 chunks.
+        // One chunk more than an attachment may have.
         let mut m = sample();
         m.records[0].heads[0].chunks =
             Some((0..=MAX_CHUNKS as u32).map(|i| oid(1000 + i)).collect());
         assert_eq!(reencode(&m).err(), Some(StoreError::LimitExceeded));
         assert_eq!(m.validate().err(), Some(StoreError::LimitExceeded));
-        // Total referenced ciphertext over 1 GiB.
+        // Total referenced ciphertext over 8 GiB.
         let mut m = sample();
         m.references[0].length = MAX_TOTAL_CIPHERTEXT;
         assert_eq!(m.validate().err(), Some(StoreError::LimitExceeded));
@@ -1928,30 +1938,49 @@ pub(crate) mod tests {
 
     /// The worst-case manifest at the maximum budgets (0004 §4.2, 0012 row
     /// "Budget inconsistency"): 50,000 records, 250,000 referenced version
-    /// objects (a version object costs more manifest bytes than a chunk),
-    /// exactly `MAX_CLOCK_COMPONENTS` clock components with 9-byte
-    /// counters, and reference lengths chosen to maximize their encoding
-    /// under the 1 GiB total.
+    /// objects, exactly `MAX_CLOCK_COMPONENTS` clock components with 9-byte
+    /// counters, and as many attachment chunks as the 8 GiB total leaves
+    /// (plan 0059). A chunk costs a reference plus its ID in a chunk list
+    /// (~75 bytes per 64 KiB of budget), far more manifest per budget byte
+    /// than a longer version reference (2 bytes per 64 KiB), so versions take
+    /// the shortest 3-byte length and the chunks take the rest.
     pub(crate) fn worst_case() -> Manifest {
+        worst_case_with(256, None)
+    }
+
+    /// [`worst_case`] with every version `version_len` long and `chunks`
+    /// chunks (default: what the total leaves). Lengths and counts beyond the
+    /// budgets give an upper bound that `validate` rejects.
+    pub(crate) fn worst_case_with(version_len: u64, chunks: Option<usize>) -> Manifest {
         const VERSIONS_PER_RECORD: usize = 5;
         let records = MAX_RECORDS;
         assert_eq!(records * VERSIONS_PER_RECORD, MAX_OBJECTS);
+        let chunk_len = chunk_ciphertext_len().unwrap();
+        let chunks = chunks.unwrap_or_else(|| {
+            let left = MAX_TOTAL_CIPHERTEXT - MAX_OBJECTS as u64 * version_len;
+            usize::try_from(left / chunk_len)
+                .unwrap()
+                .min(MAX_CHUNK_OBJECTS)
+        });
         let big = 1u64 << 40;
         let writers: Vec<WriterId> = (0..17).map(|w| writer(0x2000_0000 + w)).collect();
         // History versions take one component each; heads take the rest.
         let history_components = records * (VERSIONS_PER_RECORD - 1);
         let head_components = MAX_CLOCK_COMPONENTS - history_components;
         let wide_heads = head_components - records * 16; // heads with 17 components
-        let long_refs = 15_000; // references of 65,536 bytes (5-byte length)
         let mut m = Manifest {
             config_digest: [0xff; 32],
             vault_meta_id: RecordId(id16(0x1000_0000)),
             keyslot_id: RecordId(id16(0x1000_0001)),
             root_group_id: RecordId(id16(0x1000_0002)),
             records: Vec::with_capacity(records),
-            references: Vec::with_capacity(MAX_OBJECTS),
+            references: Vec::with_capacity(MAX_OBJECTS + chunks),
         };
         let mut object = 0u32;
+        // Chunk object IDs follow every version object, so references stay
+        // sorted; the last records' heads own them (as attachment metadata).
+        let chunk_base = u32::try_from(MAX_OBJECTS).unwrap();
+        let mut next_chunk = 0usize;
         for k in 0..records {
             let k32 = u32::try_from(k).unwrap();
             let n = if k < wide_heads { 17 } else { 16 };
@@ -1966,16 +1995,22 @@ pub(crate) mod tests {
                     Clock::from_pairs(vec![(writers[0], big + i as u64)]).unwrap()
                 };
                 let vid = VersionId::from_bytes(id16(0x3000_0000 + k32 * 8 + i as u32)).unwrap();
-                versions.push(VersionRef::new(vid, clock, oid(object)).with_tombstone());
-                let length = if (object as usize) < long_refs {
-                    65_536
+                let role = VersionRef::new(vid, clock, oid(object));
+                let owns = (k >= records - chunks.div_ceil(MAX_CHUNKS)) && i == 0;
+                versions.push(if owns {
+                    let take = MAX_CHUNKS.min(chunks - next_chunk);
+                    let ids = (next_chunk..next_chunk + take)
+                        .map(|c| oid(chunk_base + u32::try_from(c).unwrap()))
+                        .collect();
+                    next_chunk += take;
+                    role.with_chunks(ids)
                 } else {
-                    256
-                };
+                    role.with_tombstone()
+                });
                 m.references.push(ObjectRef {
                     object_id: oid(object),
                     data_profile: StoredDataProfile::V1,
-                    length,
+                    length: version_len,
                     sha256: [0xff; 32],
                 });
                 object += 1;
@@ -1986,6 +2021,15 @@ pub(crate) mod tests {
                 heads: vec![head],
                 history: versions,
                 floor: Clock::new(),
+            });
+        }
+        assert_eq!(next_chunk, chunks);
+        for c in 0..chunks {
+            m.references.push(ObjectRef {
+                object_id: oid(chunk_base + u32::try_from(c).unwrap()),
+                data_profile: StoredDataProfile::V1,
+                length: chunk_len,
+                sha256: [0xff; 32],
             });
         }
         m
@@ -2080,6 +2124,31 @@ pub(crate) mod tests {
         pairs.sort();
         r.heads[0].clock = Clock::from_pairs(pairs).unwrap();
         assert_eq!(over.validate().err(), Some(StoreError::LimitExceeded));
+    }
+
+    // 0012 §1: Budget inconsistency
+    #[test]
+    fn manifest_upper_bound_over_every_budget_still_fits_the_limit() {
+        // Every version at a 5-byte length and the full chunk count: more
+        // than any valid manifest can hold (the total is far over 8 GiB),
+        // so its encoding bounds every valid one.
+        let m = worst_case_with(65_536, Some(MAX_CHUNK_OBJECTS));
+        assert_eq!(m.validate().err(), Some(StoreError::LimitExceeded));
+        let bytes = m.encode().unwrap();
+        let sealed = qv_crypto::sealed_len(bytes.len()).unwrap();
+        eprintln!(
+            "manifest upper bound: {} bytes sealed, limit {}",
+            sealed, MAX_MANIFEST_CIPHERTEXT
+        );
+        assert!(sealed <= MAX_MANIFEST_CIPHERTEXT);
+        // Decoding refuses one chunk role over the chunk budget.
+        let over = worst_case_with(256, Some(MAX_CHUNK_OBJECTS + 1))
+            .encode()
+            .unwrap();
+        assert_eq!(
+            Manifest::decode(&over).err(),
+            Some(StoreError::LimitExceeded)
+        );
     }
 
     #[test]

@@ -460,10 +460,7 @@ mod tests {
         let dir = TestDir::new();
         let r = remote.export_archive(dir.path(), false, None).unwrap();
         let incoming = dir.path().join(format!("{}.qvsnap", r.archive_id));
-        assert_eq!(
-            s.merge_archive(&incoming, false, None).unwrap().conflicts,
-            1
-        );
+        assert_eq!(s.merge_archive(&incoming, None).unwrap().conflicts, 1);
 
         let requester = web_request("bank.example");
         let found = s.autofill_candidates(&requester).unwrap();

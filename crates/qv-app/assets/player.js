@@ -5,11 +5,14 @@
 
 // WebKitGTK buffers playing HTTP media to an unlinked file in /var/tmp, but
 // not media appended through Media Source Extensions or played from a blob.
-// On Linux the viewer gives media a data-qv-src capability instead of src:
-// fetch the verified bytes into memory, convert an MP4 into fragments for
-// a MediaSource (WebKit's blob playback cannot play an MP4 whose index is at
-// the end, and its replay after the end sticks), and fall back to a blob URL
-// for other files. Everything is dropped with the preview.
+// On Linux the viewer gives media a data-qv-src capability instead of src.
+// An MP4 streams into a MediaSource (WebKit's blob playback cannot play an
+// MP4 whose index is at the end, and its replay after the end sticks): its
+// index is read with range requests, then only the samples around the
+// playback position are fetched and rewritten as fragments, so memory stays
+// bounded whatever the file size (plan 0059). Other files, and an MP4 the
+// engine cannot stream this way, are fetched whole into a blob (the app
+// refuses those over 256 MiB). Everything is dropped with the preview.
 const blobs=new WeakMap();
 function dropBlob(media){
     const held=blobs.get(media);
@@ -28,6 +31,23 @@ function loadBlob(media,startPlaying=false,startAt=0){
     const type=media.getAttribute("data-qv-type")||"";
     const held={abort:new AbortController(),url:null,wipe(){}};
     blobs.set(media,held);
+    const total=Number(media.getAttribute("data-qv-size")||0);
+    // Replay is an explicit play request. Source replacement is async: a
+    // close/lock or another load must not restore stale playback.
+    const begin=()=>{if(startPlaying&&blobs.get(media)===held&&media.isConnected)media.play().catch(()=>{});};
+    if(window.MediaSource&&(type==="video/mp4"||type==="audio/mp4")&&Number.isSafeInteger(total)&&total>0){
+        streamMp4(media,held,source,type,total,startAt).then(begin,()=>{
+            if(blobs.get(media)!==held)return;
+            if(total<=MEMORY_MAX&&!held.attached)loadWhole(media,held,source,type,startAt,begin);
+            else dropBlob(media);
+        });
+        return;
+    }
+    loadWhole(media,held,source,type,startAt,begin);
+}
+// The largest file fetched whole (the app refuses larger non-MP4 previews).
+const MEMORY_MAX=256*1024*1024;
+function loadWhole(media,held,source,type,startAt,begin){
     fetch(source,{cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",signal:held.abort.signal})
         .then(response=>{if(!response.ok)throw new Error("preview unavailable");return response.arrayBuffer();})
         .then(buffer=>{
@@ -37,9 +57,7 @@ function loadBlob(media,startPlaying=false,startAt=0){
             // A seek after EOS uses a new decoder too. Before metadata loads,
             // currentTime sets its default start position without autoplay.
             if(startAt>0)media.currentTime=startAt;
-            // Replay is an explicit play request. Source replacement is async:
-            // a close/lock or another load must not restore stale playback.
-            if(startPlaying&&blobs.get(media)===held&&media.isConnected)media.play().catch(()=>{});
+            begin();
         })
         .catch(()=>{if(blobs.get(media)===held)dropBlob(media);});
 }
@@ -54,6 +72,7 @@ function loadBlobs(records){
     }
 }
 function playBlob(media,held,bytes,type){
+    media.removeAttribute("data-qv-ranges");
     media.setAttribute("data-qv-playback","file");
     held.url=URL.createObjectURL(new Blob([bytes],{type}));
     bytes.fill(0);
@@ -70,6 +89,7 @@ function playFromMemory(media,held,bytes,type){
     held.wipe=()=>{bytes.fill(0);for(const part of plan.parts)part.fill(0);};
     const source=new MediaSource();
     media.setAttribute("data-qv-playback","stream");
+    media.removeAttribute("data-qv-ranges");
     held.url=URL.createObjectURL(source);
     source.addEventListener("sourceopen",async()=>{
         URL.revokeObjectURL(held.url);held.url=null;
@@ -94,13 +114,183 @@ function playFromMemory(media,held,bytes,type){
     media.src=held.url;
 }
 
+// Buffered MP4 playback (plan 0059): about 30 s ahead of the playback
+// position is appended, data more than 30 s behind is removed, and a seek
+// outside what is buffered starts again at the fragment before its target (a
+// video fragment always starts at a keyframe). One range request covers the
+// samples of several fragments, at most 32 MiB.
+const AHEAD=30,BEHIND=30,WINDOW_BYTES=32*1024*1024,MOOV_MAX=64*1024*1024;
+async function fetchRange(source,held,start,end){
+    const response=await fetch(source,{cache:"no-store",credentials:"omit",referrerPolicy:"no-referrer",
+        signal:held.abort.signal,headers:{Range:`bytes=${start}-${end-1}`}});
+    if(response.status!==206)throw new Error("range");
+    const bytes=new Uint8Array(await response.arrayBuffer());
+    if(bytes.byteLength!==end-start){bytes.fill(0);throw new Error("range");}
+    return bytes;
+}
+// Walks the top-level boxes with small reads and returns the `moov` box.
+async function readMoov(source,held,total){
+    let at=0;
+    for(let n=0;n<64&&at+8<=total;n++){
+        const head=await fetchRange(source,held,at,Math.min(at+16,total));
+        const view=new DataView(head.buffer);
+        let size=view.getUint32(0),length=8;
+        const type=fourcc(view,4);
+        if(size===1){
+            if(head.byteLength<16||view.getUint32(8)!==0)throw new Error("mp4");
+            size=view.getUint32(12);length=16;
+        }else if(size===0)size=total-at;
+        head.fill(0);
+        if(size<length||at+size>total)throw new Error("mp4");
+        if(type==="moov"){
+            if(size>MOOV_MAX)throw new Error("mp4");
+            return fetchRange(source,held,at,at+size);
+        }
+        at+=size;
+    }
+    throw new Error("mp4");
+}
+function appendPart(buffer,part){
+    return new Promise((done,fail)=>{
+        buffer.addEventListener("updateend",done,{once:true});
+        buffer.addEventListener("error",fail,{once:true});
+        buffer.appendBuffer(part);
+    });
+}
+function removeRange(buffer,start,end){
+    return new Promise((done,fail)=>{
+        buffer.addEventListener("updateend",done,{once:true});
+        buffer.addEventListener("error",fail,{once:true});
+        buffer.remove(start,end);
+    });
+}
+// The first fragment to append for playback from `time`: for every track,
+// its last fragment starting at or before `time`.
+function fragmentFor(plan,time){
+    let first=plan.runs.length;
+    for(const track of plan.tracks){
+        let at=-1;
+        plan.runs.forEach((run,i)=>{if(run.track===track&&(at<0||run.start<=time))at=i;});
+        if(at>=0)first=Math.min(first,at);
+    }
+    return first;
+}
+function buffered(buffer,time){
+    const r=buffer.buffered;
+    for(let i=0;i<r.length;i++)if(time>=r.start(i)&&time<r.end(i))return true;
+    return false;
+}
+// Resolves once the MediaSource plays from `startAt`; rejects before the
+// media element is touched, so the caller can fall back.
+async function streamMp4(media,held,source,type,total,startAt){
+    const moov=await readMoov(source,held,total);
+    let plan;
+    try{plan=planMp4(moov,total,type);}finally{moov.fill(0);}
+    if(!MediaSource.isTypeSupported(plan.type))throw new Error("mp4");
+    if(blobs.get(media)!==held)throw new Error("stale");
+    const live=()=>blobs.get(media)===held&&media.isConnected;
+    // A fragment's first frame is presented a little after its decode time
+    // (B-frames), so start one second earlier to cover `startAt` itself.
+    const first=fragmentFor(plan,Math.max(0,startAt-1));
+    // Until the first fragments are in, the position is `startAt`: WebKit
+    // buffers nothing for a seek made before any media data (plan 0059).
+    const st={next:first,busy:false,window:null,seq:1,pending:startAt>0?startAt:null};
+    held.attached=true;
+    const ms=new MediaSource();
+    media.setAttribute("data-qv-playback","stream");
+    // Fetched in ranges, never whole (the validation flow checks this).
+    media.setAttribute("data-qv-ranges","");
+    held.url=URL.createObjectURL(ms);
+    let buffer=null;
+    const pump=async()=>{
+        if(st.busy||!buffer||!live())return;
+        st.busy=true;
+        try{
+            while(live()&&st.next<plan.runs.length){
+                const time=st.pending??media.currentTime;
+                if(plan.runs[st.next].start>time+AHEAD)break;
+                const from=st.next;
+                let to=from,lo=Infinity,hi=0;
+                while(to<plan.runs.length&&plan.runs[to].start<=time+AHEAD){
+                    const run=plan.runs[to],l=Math.min(lo,run.lo),h=Math.max(hi,run.hi);
+                    if(to>from&&h-l>WINDOW_BYTES)break;
+                    lo=l;hi=h;to++;
+                }
+                const bytes=await fetchRange(source,held,lo,hi);
+                st.window=bytes;
+                try{
+                    for(let i=from;i<to&&live();i++){
+                        const part=fragment({base:lo,bytes},plan.runs[i],st.seq++);
+                        try{await appendPart(buffer,part);}finally{part.fill(0);}
+                    }
+                }finally{bytes.fill(0);st.window=null;}
+                st.next=to;
+                if(st.pending!==null){
+                    const r=buffer.buffered;
+                    media.currentTime=r.length?Math.max(st.pending,r.start(0)):st.pending;
+                    st.pending=null;
+                }
+                // Drop what lies well behind the playback position.
+                const behind=media.currentTime-BEHIND;
+                if(buffer.buffered.length&&buffer.buffered.start(0)<behind)await removeRange(buffer,0,behind);
+            }
+            if(live()&&st.next>=plan.runs.length&&ms.readyState==="open"&&!buffer.updating)ms.endOfStream();
+        }catch{
+            if(blobs.get(media)===held)dropBlob(media);
+        }finally{st.busy=false;}
+    };
+    // A seek outside what is buffered starts a fresh MediaSource at the
+    // target: WebKitGTK's decoder presents no frames after its buffer is
+    // emptied and refilled, the same fault class as replay after the end
+    // (plan 0057), so the source is rebuilt from the live capability there.
+    // Positions this source will still reach by reading ahead (including its
+    // own starting seek) need no rebuild.
+    const restart=()=>{
+        if(!buffer||!live())return;
+        const time=media.currentTime;
+        if(buffered(buffer,time))return;
+        const from=plan.runs[first]?.start??0;
+        const next=st.next<plan.runs.length?plan.runs[st.next].start:Infinity;
+        if(time>=from&&time<=next+AHEAD)return;
+        loadBlob(media,!media.paused,time);
+    };
+    held.wipe=()=>{
+        if(st.window)st.window.fill(0);
+        media.removeEventListener("timeupdate",pump);
+        media.removeEventListener("seeking",restart);
+    };
+    await new Promise((resolve,reject)=>{
+        ms.addEventListener("sourceopen",async()=>{
+            URL.revokeObjectURL(held.url);held.url=null;
+            try{
+                buffer=ms.addSourceBuffer(plan.type);
+                await appendPart(buffer,plan.init);
+                if(Number.isFinite(plan.duration)&&plan.duration>0)ms.duration=plan.duration;
+                media.addEventListener("timeupdate",pump);
+                media.addEventListener("seeking",restart);
+                resolve();
+                pump();
+            }catch(e){reject(e);}
+        },{once:true});
+        media.src=held.url;
+    });
+}
+
 // Lossless MP4 → fragmented MP4 conversion for a MediaSource. It reads the
 // sample tables of the audio and video tracks and rewrites the same coded
 // samples as an init segment plus ~1 s fragments; nothing is re-encoded.
-// The input is bounded (a preview is at most 10 MiB) and every offset is
-// checked; anything unexpected throws and the caller plays the blob instead.
+// Every offset is checked against the file; anything unexpected throws and
+// the caller falls back.
 const MAX_SAMPLES=1<<21;
 function fragmentMp4(bytes,type){
+    const plan=planMp4(bytes,bytes.byteLength,type);
+    const parts=[plan.init];
+    plan.runs.forEach((run,i)=>parts.push(fragment({base:0,bytes},run,i+1)));
+    return{type:plan.type,parts};
+}
+// The init segment and every fragment's samples, from `bytes` holding the
+// `moov` box (alone, or within the whole file) of a file `length` long.
+function planMp4(bytes,length,type){
     const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
     const top=boxes(view,0,bytes.byteLength);
     const moov=only(top,"moov");
@@ -108,7 +298,7 @@ function fragmentMp4(bytes,type){
     const mvhd=only(inMoov,"mvhd");
     const tracks=[];
     for(const trak of inMoov.filter(b=>b.type==="trak")){
-        const track=readTrack(view,bytes,trak);
+        const track=readTrack(view,bytes,trak,length);
         if(track)tracks.push(track);
     }
     if(!tracks.length)throw new Error("mp4");
@@ -121,10 +311,10 @@ function fragmentMp4(bytes,type){
     const fragments=[];
     for(const track of tracks)for(const run of runs(track))fragments.push(run);
     fragments.sort((a,b)=>a.start-b.start);
-    const parts=[init];
-    fragments.forEach((run,i)=>parts.push(fragment(bytes,run,i+1)));
     const codecs=tracks.map(t=>t.codec).join(",");
-    return{type:`${video?"video":"audio"}/mp4; codecs="${codecs}"`,parts};
+    let duration=0;
+    for(const t of tracks){let sum=0;for(let i=0;i<t.samples.count;i++)sum+=t.samples.duration[i];duration=Math.max(duration,sum/t.scale);}
+    return{type:`${video?"video":"audio"}/mp4; codecs="${codecs}"`,init,runs:fragments,tracks,duration};
 }
 function boxes(view,start,end){
     const out=[];
@@ -148,7 +338,7 @@ function only(list,type){
     return found[0];
 }
 function find(list,type){return list.find(b=>b.type===type)??null;}
-function readTrack(view,bytes,trak){
+function readTrack(view,bytes,trak,length){
     const inTrak=boxes(view,trak.body,trak.end);
     const tkhd=only(inTrak,"tkhd");
     const mdia=only(inTrak,"mdia");
@@ -171,7 +361,7 @@ function readTrack(view,bytes,trak){
     if(!entry)throw new Error("mp4");
     const codec=codecOf(view,entry,handler);
     const id=view.getUint32(tkhd.body+(view.getUint8(tkhd.body)===1?20:12));
-    const samples=sampleTable(view,bytes.byteLength,inStbl);
+    const samples=sampleTable(view,length,inStbl);
     // Each track starts at 0 (the first presented sample), as FFmpeg's
     // fragmenting does: WebKit stalls when it seeks into a gap at the start,
     // so an edit list's few milliseconds of encoder delay are not applied.
@@ -250,12 +440,17 @@ function runs(track){
     let first=0,time=0,start=0;
     for(let i=0;i<=count;i++){
         const cut=i===count||(i>first&&time-start>=track.scale&&(!sync||sync[i]));
-        if(cut){out.push({track,first,end:i,decode:start,start:start/track.scale});first=i;start=time;}
+        if(cut){
+            let lo=Infinity,hi=0;
+            for(let k=first;k<i;k++){lo=Math.min(lo,track.samples.offset[k]);hi=Math.max(hi,track.samples.offset[k]+track.samples.size[k]);}
+            out.push({track,first,end:i,decode:start,start:start/track.scale,lo,hi});first=i;start=time;
+        }
         if(i<count)time+=duration[i];
     }
     return out;
 }
-function fragment(bytes,run,sequence){
+// One fragment; `src.bytes` holds the file from offset `src.base`.
+function fragment(src,run,sequence){
     const{track,first,end}=run,s=track.samples,n=end-first;
     let length=0;
     for(let i=first;i<end;i++)length+=s.size[i];
@@ -280,7 +475,11 @@ function fragment(bytes,run,sequence){
         view.setInt32(at,s.composition[i]+track.shift);at+=4;
     }
     put32(8+length);tag("mdat");
-    for(let i=first;i<end;i++){out.set(bytes.subarray(s.offset[i],s.offset[i]+s.size[i]),at);at+=s.size[i];}
+    for(let i=first;i<end;i++){
+        const from=s.offset[i]-src.base;
+        if(from<0||from+s.size[i]>src.bytes.byteLength)throw new Error("mp4");
+        out.set(src.bytes.subarray(from,from+s.size[i]),at);at+=s.size[i];
+    }
     return out;
 }
 function initTrack(bytes,t){

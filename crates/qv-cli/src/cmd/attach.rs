@@ -147,12 +147,17 @@ pub(crate) fn run(ctx: &Ctx, m: &ArgMatches) -> Result<(), CliError> {
             out.flush()?;
         } else {
             let handle = resolve(&items, arg(m, "attachment"))?;
+            let keep = cmd == "rm" && m.get_flag("keep-snapshots");
             let prompt = if cmd == "save" {
-                "Export plaintext attachment to the explicit new file?"
+                "Export plaintext attachment to the explicit new file?".to_owned()
             } else {
-                "Permanently remove attachment? Independent copies may remain; no secure-erasure guarantee."
+                super::trash::snapshot_question(
+                    "Permanently remove attachment? Independent copies may remain; no secure-erasure guarantee.",
+                    session.snapshots_holding(qv_core::DeletionTarget::Attachment(handle))?,
+                    keep,
+                )
             };
-            if !ctx.yes && !term::stdio_tty()?.confirm(prompt)? {
+            if !ctx.yes && !term::stdio_tty()?.confirm(&prompt)? {
                 return Err(CliError::cancelled());
             }
             crate::signals::check()?;
@@ -176,7 +181,7 @@ pub(crate) fn run(ctx: &Ctx, m: &ArgMatches) -> Result<(), CliError> {
                         ));
                     }
                 }
-                "rm" => session.remove_attachment(handle)?,
+                "rm" => session.remove_attachment(handle, keep)?,
                 _ => return Err(CliError::new(OTHER, "unknown attachment command")),
             }
         }

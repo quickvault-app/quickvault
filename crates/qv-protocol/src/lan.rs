@@ -25,8 +25,9 @@ use crate::registry::{ErrorCode, LanProfile};
 pub const MESSAGE_MAX: usize = 1_048_576 + 1_024;
 /// Most IDs in one `Want` (0013 §7.4).
 pub const MAX_WANT_IDS: usize = 4096;
-/// Most `Want` messages in one turn: ⌈250,000 / 4,096⌉ (0013 §7.4).
-pub const MAX_WANT_MESSAGES: usize = 62;
+/// Most `Want` messages in one turn: ⌈(250,000 + 131,072) / 4,096⌉ (0013
+/// §7.4, plan 0059).
+pub const MAX_WANT_MESSAGES: usize = 94;
 /// Largest manifest part (0013 §7.3).
 pub const MAX_MANIFEST_PART: usize = 1 << 20;
 /// Largest manifest a state may announce (0013 §7.2).

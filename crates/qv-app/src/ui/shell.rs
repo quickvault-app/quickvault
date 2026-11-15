@@ -523,7 +523,8 @@ pub(crate) fn Shell(controller: Controller, view: ShellView, palette: Signal<boo
             }
         }
         if let Some(kind) = pending.filter(|_| !busy) {
-            Confirm { controller: controller.clone(), epoch, kind, seconds: live.weak_seconds }
+            Confirm { controller: controller.clone(), epoch, kind, seconds: live.weak_seconds,
+                keep: controller.peek(epoch, |ws| ws.pending_keep()).unwrap_or(false) }
         }
         if !busy {
             div { class: "toasts",
@@ -762,14 +763,31 @@ pub(crate) fn Confirm(
     epoch: FormEpoch,
     kind: ConfirmKind,
     seconds: u64,
+    #[props(default)] keep: bool,
 ) -> Element {
+    // A permanent deletion also removes the snapshots that hold its data,
+    // unless the user keeps them (0007 §3.3, plan 0059).
+    let holding = match kind {
+        ConfirmKind::EmptyTrash(n)
+        | ConfirmKind::PurgeExpired(_, n)
+        | ConfirmKind::PurgeHistory(n)
+        | ConfirmKind::RemoveAttachment(n) => n,
+        _ => 0,
+    };
+    let snapshots = match (holding, keep) {
+        (0, _) => String::new(),
+        (1, false) => " 1 snapshot holds this data and is deleted too.".to_owned(),
+        (n, false) => format!(" {n} snapshots hold this data and are deleted too."),
+        (1, true) => " 1 snapshot holds this data and is kept, so it stays recoverable until the snapshot expires.".to_owned(),
+        (n, true) => format!(" {n} snapshots hold this data and are kept, so it stays recoverable until they expire."),
+    };
     let message = match kind {
         ConfirmKind::DeleteRecursive => "Move this group and everything in it to the trash?".to_owned(),
-        ConfirmKind::EmptyTrash => "Permanently delete every non-conflicted item in the trash? A recovery snapshot is taken first. Independent copies may remain.".to_owned(),
-        ConfirmKind::PurgeExpired(false) => "Permanently delete the trash items past their retention period? A recovery snapshot is taken first.".to_owned(),
-        ConfirmKind::PurgeExpired(true) => "Vault dates are ahead of this device's clock, so expiry may be wrong. Check the clock first. Permanently delete the expired items anyway?".to_owned(),
-        ConfirmKind::PurgeHistory => "Purge this entry's local history? Active versions remain. Snapshots, unseen concurrent history and independent copies may remain; there is no secure erasure.".to_owned(),
-        ConfirmKind::RemoveAttachment => "Permanently remove this attachment? Independent copies may remain; there is no secure erasure.".to_owned(),
+        ConfirmKind::EmptyTrash(_) => format!("Permanently delete every non-conflicted item in the trash?{snapshots} Independent copies may remain."),
+        ConfirmKind::PurgeExpired(false, _) => format!("Permanently delete the trash items past their retention period?{snapshots}"),
+        ConfirmKind::PurgeExpired(true, _) => format!("Vault dates are ahead of this device's clock, so expiry may be wrong. Check the clock first. Permanently delete the expired items anyway?{snapshots}"),
+        ConfirmKind::PurgeHistory(_) => format!("Purge this entry's local history? Active versions remain.{snapshots} Unseen concurrent history and independent copies may remain; there is no secure erasure."),
+        ConfirmKind::RemoveAttachment(_) => format!("Permanently remove this attachment?{snapshots} Independent copies may remain; there is no secure erasure."),
         ConfirmKind::SaveAttachment => "Write this attachment's plaintext to the chosen file? It is not encrypted there, and a failure may leave incomplete plaintext.".to_owned(),
         ConfirmKind::SelfContained => "Include the password slot? Anyone holding this file can try offline master-password guessing, and a later password change does not revoke it.".to_owned(),
         ConfirmKind::Resolve(false) => "Create a new complete version from this choice, covering every version shown? Edits not seen here may still conflict.".to_owned(),
@@ -779,6 +797,7 @@ pub(crate) fn Confirm(
         ConfirmKind::OldSnapshots(n) => format!("{n} local snapshots were taken before this password change and still open with the old password. Delete them? Copies elsewhere remain; deletion is not cryptographic erasure."),
         ConfirmKind::LinkApp => "Link this app to the entry? QuickVault verified the app's package and signing certificate, but cannot tell whether the app belongs to the service. Link only an app you trust.".to_owned(),
         ConfirmKind::ReducedQuick => "Lower protection: your screen lock PIN, pattern or password would open this vault, so anyone who knows it could too. Use it instead of your fingerprint? Fingerprint unlock never falls back to it by itself.".to_owned(),
+        ConfirmKind::LargeAttachment(n) => format!("This file is {}. Adding it takes a while and makes the vault that much larger, and previews of large files may be slow. Add it?", super::items::human_size(n)),
         ConfirmKind::WeakPassword => "This password is weak and could be guessed by an attacker who obtains your vault file. Use it anyway?".to_owned(),
     };
     let weak = kind == ConfirmKind::WeakPassword;
@@ -788,6 +807,17 @@ pub(crate) fn Confirm(
             div { class: "dialog", role: "alertdialog", "aria-modal": "true", "aria-label": "Confirmation",
                 h3 { if weak { "Weak password" } else { "Are you sure?" } }
                 p { "{message}" }
+                if holding > 0 {
+                    label { class: "check",
+                        input { id: "confirm-keep", r#type: "checkbox", checked: keep,
+                            onchange: {
+                                let c = controller.clone();
+                                move |e: FormEvent| c.act(epoch, WsAction::KeepSnapshots(e.checked()))
+                            }
+                        }
+                        span { "Keep in snapshots" }
+                    }
+                }
                 div { class: "actions",
                     button { class: "btn subtle", id: "confirm-cancel", autofocus: true, onclick: act(&controller, epoch, WsAction::Answer(false)), if weak { "Choose a stronger password" } else { "Cancel" } }
                     button { class: "btn danger", id: "confirm-continue", "data-qv-clear": "true", disabled: weak && seconds > 0, onclick: act(&controller, epoch, WsAction::Answer(true)), if weak { "Use anyway · {seconds}s" } else { "Continue" } }

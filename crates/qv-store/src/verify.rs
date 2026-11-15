@@ -13,7 +13,9 @@
 //! 3. every active head and every retained history version: reference hash
 //!    (history), AEAD, the per-head rules and the record-kind rules;
 //! 4. every attachment version's whole content, through the existing
-//!    streaming chunk verifier.
+//!    streaming chunk verifier;
+//! 5. every kept local snapshot manifest and each object it references
+//!    beyond the live manifest (plan 0059).
 //!
 //! It reads only: no `Write`, no manifest, head, anchor or pruning step is
 //! involved, and nothing is repaired. Missing or mismatched data is
@@ -91,7 +93,7 @@ impl UnlockedVault {
         let keys = Keys::derive(&self.vk, &header)?;
 
         // 1. The manifest against the head, then its AEAD and identity.
-        let stored = schema::read_manifest(&self.file.conn)?;
+        let stored = schema::read_manifest(&self.file.conn, &self.state.head.manifest_hash)?;
         if stored.hash != self.state.head.manifest_hash
             || stored.key_generation != header.key_generation
         {
@@ -210,6 +212,54 @@ impl UnlockedVault {
             }
         }
         check_control_kinds(&manifest, &kinds)?;
+
+        // 5. Every kept snapshot manifest (its row, AEAD and reference
+        // digest) and every object it references that the live manifest
+        // does not (0004 §2.5, §3.6; plan 0059). The index must retain each.
+        if let Some(index) = &self.state.snapshots {
+            let mut checked: std::collections::BTreeSet<qv_model::ObjectId> = manifest
+                .references()
+                .iter()
+                .map(|r| r.object_id())
+                .collect();
+            let mut seen = std::collections::BTreeSet::new();
+            for row in index.rows() {
+                if !seen.insert(row.manifest_hash) {
+                    continue;
+                }
+                let (kept, _) = crate::snapshot_commit::open_kept(
+                    &self.file.conn,
+                    &keys,
+                    &header,
+                    &row.manifest_hash,
+                )?;
+                if kept.reference_digest()? != row.reference_digest {
+                    return Err(StoreError::Integrity);
+                }
+                for r in kept.references() {
+                    if cancelled() {
+                        return Err(StoreError::Io);
+                    }
+                    if !index.retains(r.object_id()) {
+                        return Err(StoreError::Integrity);
+                    }
+                    if !checked.insert(r.object_id()) {
+                        continue;
+                    }
+                    accepted_profile(&header, r.data_profile().id())?;
+                    let (row_profile, _nonce, ciphertext) = reader.read(
+                        header.key_generation,
+                        &r.object_id().to_bytes(),
+                        r.length(),
+                    )?;
+                    if row_profile != r.data_profile().id()
+                        || object_hash(ObjectHashProfile::V1, &ciphertext).0 != *r.sha256()
+                    {
+                        return Err(StoreError::Integrity);
+                    }
+                }
+            }
+        }
         if cancelled() {
             return Err(StoreError::Io);
         }

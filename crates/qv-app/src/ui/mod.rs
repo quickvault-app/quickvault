@@ -117,9 +117,9 @@ fn fixture_report(controller: &Controller) -> impl FnMut(FormEvent) + 'static {
         }
         if crate::validation_media::enabled()
             && let Some(facts) = value.strip_prefix("MEDIA-FACTS:")
-            && facts.len() == 11
-            && facts.split(',').count() == 6
-            && facts.bytes().all(|b| b.is_ascii_digit() || b == b',')
+            && facts.len() <= 80
+            && facts.split(',').count() == 11
+            && facts.split(',').all(|n| n.parse::<u32>().is_ok())
         {
             println!("synthetic media facts {facts}");
             return;
@@ -633,17 +633,10 @@ fn Locked(controller: Controller, revision: u64) -> Element {
             div { class: "wizard fade-in",
                 h2 { "Check this recovery baseline" }
                 p { "The external anchor is missing or mismatched. This verified file may be an older copy; opening it does not prove it is the latest state." }
-                p { "Accepting it first creates a verified recovery snapshot, then establishes a new local baseline. Nothing is adopted without your action." }
-                if let Some(needed) = view.over_budget {
-                    div { class: "banner", Svg { icon: Icon::Warn } span { "The mandatory recovery snapshot needs {needed} bytes and exceeds the snapshot budget." } }
-                }
+                p { "Accepting it establishes a new local baseline from exactly this file's contents. Nothing is adopted without your action." }
                 {err_view}
                 div { class: "actions stack",
-                    if view.over_budget.is_some() {
-                        button { class: "btn primary", "data-qv-clear": "true", disabled: busy, onclick: perform(Action::AdoptBaselineOverBudget, true), "Allow the snapshot to exceed the budget and accept" }
-                    } else {
-                        button { class: "btn primary", "data-qv-clear": "true", disabled: busy, onclick: perform(Action::AdoptBaseline, true), "Accept this file as the recovery baseline" }
-                    }
+                    button { class: "btn primary", "data-qv-clear": "true", disabled: busy, onclick: perform(Action::AdoptBaseline, true), "Accept this file as the recovery baseline" }
                     button { class: "btn", onclick: lock, "Decline and lock" }
                 }
             }

@@ -137,7 +137,7 @@ content_hash is SHA-256 of the complete plaintext content.
 authenticated with its index and the attachment ID, so chunks cannot be
 reordered or swapped. The final chunk is padded to full size.
 
-6.3. Initial client maximum is 10 MiB. Server limits may be lower; they cannot
+6.3. Client maximum is 2 GiB (raised from 10 MiB, owner request, plan 0059). Server limits may be lower; they cannot
 raise the client's local safety budget (0004). Filename/MIME are untrusted
 metadata: sanitize explicit save paths, do not execute/open attachments or fetch
 external resources automatically.
@@ -172,6 +172,12 @@ to a file (WebKitGTK on Linux writes playing HTTP media to an unlinked file in
 route into renderer memory and plays it from there (owner request,
 2026-11-14): an MP4 as Media Source Extensions fragments rewritten losslessly
 from its own sample tables (no re-encoding), anything else as an in-memory blob.
+The MP4 path reads the file's index and then only the samples around the
+playback position with range requests, appending about 30 seconds ahead and
+removing what lies more than about 30 seconds behind, so renderer memory stays
+bounded whatever the file size; a seek restarts at the keyframe before its
+target. Other media over 256 MiB is not previewed there (save a copy instead)
+(owner request, 2026-11-15; plan 0059).
 An explicit replay or backward seek after the end creates a fresh memory
 playback source from the still-live authenticated route; do not retain
 application-owned plaintext for either action. Close, navigation, lock or hiding
@@ -235,6 +241,9 @@ searchable. Paging MUST NOT silently omit records, fields or conflicts.
 
 ## Changelog
 
+- 2026-11-15: §6.3: the attachment maximum is 2 GiB; §6.4: Linux MP4 preview
+  buffers around the playback position, other Linux memory playback is bounded
+  at 256 MiB (owner request, plan 0059).
 - 2026-11-14: §6.4: backward seek after EOS also reconstructs the memory
   source, restoring the chosen position while paused (owner follow-up, 0057).
 - 2026-11-14: §6.4: replay reconstructs the memory playback source using the

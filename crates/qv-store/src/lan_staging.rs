@@ -42,7 +42,7 @@ use crate::manifest::{Manifest, ObjectRef, config_digest_for, open_manifest};
 use crate::object::Scope;
 use crate::{
     ArchiveScope, MAX_ARCHIVE_HEADER_BYTES, MAX_ARCHIVE_MANIFEST_FRAME, MAX_ARCHIVE_OBJECT_FRAME,
-    MAX_ARCHIVE_TOTAL_LENGTH, MAX_OBJECTS, StoreError, fs,
+    MAX_ARCHIVE_TOTAL_LENGTH, MAX_REFERENCES, StoreError, fs,
 };
 
 /// The name the unlinked staging file is created under.
@@ -175,7 +175,7 @@ impl LanStaging {
             return Err(StoreError::Unsupported);
         }
         let references = manifest.references();
-        if references.len() > MAX_OBJECTS {
+        if references.len() > MAX_REFERENCES {
             return Err(StoreError::LimitExceeded);
         }
         let total = references
@@ -243,6 +243,24 @@ impl LanStaging {
             .filter(|(_, p)| *p == Planned::Peer)
             .map(|(id, _)| *id)
             .collect()
+    }
+
+    /// Ciphertext bytes of the objects requested from the peer: staged so
+    /// far, and in total (progress display only, plan 0059).
+    pub fn peer_bytes(&self) -> (u64, u64) {
+        let refs = self.manifest.references();
+        let mut done = 0u64;
+        let mut total = 0u64;
+        for (i, (_, planned)) in self.plan.iter().enumerate() {
+            if *planned == Planned::Peer {
+                let len = refs.get(i).map_or(0, ObjectRef::length);
+                total = total.saturating_add(len);
+                if i < self.next {
+                    done = done.saturating_add(len);
+                }
+            }
+        }
+        (done, total)
     }
 
     /// Where the next object comes from, or `None` once every planned

@@ -135,7 +135,7 @@ fn human(o: &mut Out, s: &SnapshotSummary) {
     o.raw("  ");
     o.raw(s.kind.label());
     o.raw(&format!(
-        "  {} bytes on disk  {} objects  {} bytes referenced\n",
+        "  {} bytes kept  {} objects  {} bytes referenced\n",
         s.size, s.objects, s.total_bytes
     ));
 }

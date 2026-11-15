@@ -16,7 +16,10 @@ anchor. The active DB is private application storage, not a file-sync target.
 
 ### 1. Files and opening
 
-1.1. Extension `.qvault`; fixed `application_id` and `user_version`.
+1.1. Extension `.qvault`; fixed `application_id` and `user_version` (the
+schema version). Schema `0x7FFF0005` adds `snapshot_index` (§2.5); a file of
+schema `0x7FFF0004` with exactly that schema's tables opens and gains the
+table in its first write transaction (plan 0059).
 Use owner-only file permissions (0600, private 0700 directory on Unix;
 equivalent ACLs elsewhere). Reject symlinks, nonregular files and unexpected
 path replacement. The default location is private application storage. A
@@ -72,11 +75,12 @@ of attacker-supplied SQL constraints.
 | `header` | exactly one row | format, vault ID, key generation, data profile, minimum profiles, header MAC |
 | `keyslot` | slot ID | type, device binding, KDF profile/salt, KEK commitment, wrapping profile, wrapped VK |
 | `object` | (key generation, object ID) | data profile, nonce, ciphertext |
-| `manifest` | manifest hash | generation, profile, nonce and encrypted manifest |
+| `manifest` | manifest hash | generation, profile, nonce and encrypted manifest: the live one named by `local_head`, plus those local snapshots retain (§2.5) |
 | `local_head` | exactly one row | authenticated local state (§5.4 of 0005): sequence, previous digest, manifest hash, remote checkpoint, `archive_receipts_digest`, `lan_links_digest` |
 | `sync_state` | remote ID | encrypted verified remote base, cursor and pending publication |
 | `archive_receipts` | exactly one row | sealed local filename/complete-archive digest set (§2.3), bound by `local_head`; never in archives or sync |
 | `replica` | exactly one row | local-only writer state (0005 §1.3): replica ID naming this DB's external anchor, writer ID, next counter; never in archives or sync |
+| `snapshot_index` | exactly one row | sealed local snapshot list and the object IDs snapshots retain (§2.5); local-only, never in archives or sync |
 | `lan_link` | link ID | kept for format compatibility and always empty after a commit (0013 §9.1, 0014 §5); bound by the local head's `lan_links_digest`; local-only, never in archives or sync |
 
 Server checkpoint fields and `sync_state` rows are optional server-mode state.
@@ -184,6 +188,20 @@ change. The development schema/header version
 with this table is `0x7FFF0004`. Older development files are rejected,
 without a migration.
 
+2.5. **Local snapshots inside the vault (plan 0059).** A local snapshot is a
+retained manifest in this file, not a copy of the vault (0007 §3.1). One
+sealed `snapshot_index` blob (local-state purpose key; AAD binds vault ID and
+key generation) lists each snapshot `[snapshot_id, created_at, kind,
+manifest_hash]` and the sorted set of object IDs any snapshot's manifest
+references. A commit deletes an object row only when neither the new manifest
+nor that set references it, and a manifest row only when neither the head nor a
+snapshot names it. Snapshot rows, the set and their removal change in the same
+transaction as the commit that causes them. The number and sizes of retained
+manifest rows are visible to a disk-image holder, as snapshot files were
+(accepted leakage); which objects they retain is encrypted. Snapshots follow
+the file: they do not protect against losing or corrupting it, and a new-file
+operation (VK rotation, restore, import as a new vault) carries none.
+
 ### 3. Encoding and encryption
 
 3.1. Use RFC 8949 core deterministic CBOR: shortest encodings, definite lengths,
@@ -251,7 +269,10 @@ views anyway). Verify hash and AEAD again whenever a historical version or chunk
 is read. A full re-hash of all stored ciphertext runs on explicit
 `qv verify` and before creating an archive; it is not repeated on every
 CLI command. Ignore unreferenced objects. Missing or mismatched data is an
-integrity failure, never an empty record.
+integrity failure, never an empty record. A snapshot's objects are checked
+when it is restored (as an archive, §6.3) and by explicit `qv verify`; unlock
+checks only that the index authenticates and that each named manifest row
+exists.
 
 ### 4. Resource budgets
 
@@ -259,16 +280,19 @@ integrity failure, never an empty record.
 1 MiB padded record ciphertext; 64 KiB + framing per chunk ciphertext; 64 MiB
 manifest; CBOR nesting 32; 4,096 fields per entry; 256 writers per clock; 256
 concurrent heads per record; 50,000 record IDs including tombstones; 250,000
-referenced objects; 1,048,576 clock components in total across a manifest's
-heads, retained history and history floors; 1 GiB total referenced
-ciphertext; 10 MiB per attachment;
+referenced objects other than attachment chunks, plus at most 131,072
+attachment chunks (the total budget in 64 KiB chunks); 1,048,576 clock
+components in total across a manifest's heads, retained history and history
+floors; 8 GiB total referenced ciphertext; 2 GiB per attachment; at most 48
+retained snapshot manifests;
 256 KiB per text/byte field. Header/keyslot metadata is at most 64 KiB with at
 most 64 slots. Apply SQLite length, column, expression, page-count and
 execution-step limits. Stream object hashes; never load total ciphertext or all
 attachments into RAM.
 
 4.2. Budgets MUST be mutually consistent: the worst-case canonical manifest at
-the maximum record, object, head and writer counts must fit the manifest limit.
+the maximum record, object, chunk, head and writer counts must fit the manifest
+limit.
 The aggregate clock-component budget, not the per-clock writer limit times the
 object count, bounds the clocks in that worst case. History retention (0007)
 yields to the object and clock-component budgets; active heads, tombstones
@@ -282,7 +306,7 @@ resolved under the same limit. Reading/exporting an existing state does not
 apply this additional admission rule.
 
 4.3. Network listing pages are at most 8 MiB and aggregate upload/download
-staging 2 GiB. A single object transfer is bounded by its own per-type limit
+staging 16 GiB. A single object transfer is bounded by its own per-type limit
 (manifest, record or chunk) and is streamed, not buffered in a page. Group
 traversal is iterative, bounded by record count. Check counter arithmetic.
 Known KDF profiles select exact work factors; unknown profiles fail before any
@@ -324,7 +348,8 @@ state, writer identity, anchors, sessions, device bundles and quick slots
 are never present to be removed.
 
 5.4. Explicit Android vault import stages only ciphertext in private owner-only
-storage, bounded by `MAX_DB_BYTES` (2 GiB physical SQLite bytes) using actual
+storage, bounded by `MAX_DB_BYTES` (16 GiB physical SQLite bytes: the 8 GiB budget plus
+history, snapshot-only objects and manifests) using actual
 streamed length, not provider metadata. Apply all ordinary identification,
 SQLite hardening, password/header authentication and complete content validation
 before publication. Staging has a source-only anchor context; never consult or
@@ -355,8 +380,9 @@ archive/restore/anchor temporaries on the next operation in that exact family;
 never infer staleness from age or delete rotation-journal-owned replacements.
 Cleanup is not secure erasure and does not establish crash durability itself.
 
-6.1. An archive (`.qvsnap`) is the only format for local snapshots, explicit
-backups and file exchange (0005 §4, 0007 §3). It is a byte stream:
+6.1. An archive (`.qvsnap`) is the only format for explicit backups, file
+exchange, restoring a local snapshot and the recovery copy of a VK rotation
+(0005 §4, 0007 §3); local snapshots themselves live inside the vault (§2.5). It is a byte stream:
 
 ```
 "QVSNAP\0" || u8 format_version || u32be header_length || header
@@ -416,7 +442,7 @@ supported. Published archives are immutable.
 ### 7. View residency and authenticated path policy (0047)
 
 7.1. A valid vault has no aggregate searchable-text eligibility limit. The
-1 GiB referenced-ciphertext budget and every §4.1 per-record/model/manifest
+8 GiB referenced-ciphertext budget and every §4.1 per-record/model/manifest
 limit remain. Use a compact structural index bounded by those limits and an
 evictable metadata cache with at most 64 MiB of owned text capacity, including
 normalized/sort-key copies and cursor text. Evict or bypass the cache when a
@@ -506,6 +532,13 @@ is unsupported ([SQLite warning](https://www.sqlite.org/howtocorrupt.html)).
    format. Changes require documented policy/version updates.
 
 ## Changelog
+
+- 2026-11-15: Larger budgets and snapshots inside the vault (owner request,
+  plan 0059; numbers delegated): 2 GiB per attachment, 8 GiB total, chunks
+  counted apart from the 250,000 objects (at most 131,072), 16 GiB vault file
+  and staging; §2.5 `snapshot_index` and retained manifests (schema
+  `0x7FFF0005`, upgrade from `0x7FFF0004`); §3.6 snapshot verification;
+  §6.1 archives no longer hold ordinary local snapshots.
 
 - 2026-11-13: §7.2 lets unlock verification feed the index builder so each
   head is decoded once; §7.3 permits text-free per-query match sets, query

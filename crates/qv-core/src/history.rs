@@ -349,8 +349,10 @@ impl Session {
         })
     }
 
-    /// Purges retained history while preserving active heads and floors.
-    pub fn purge_history(&self, entry: EntryHandle) -> Result<(), CoreError> {
+    /// Purges retained history while preserving active heads and floors. It
+    /// takes no recovery copy; unless `keep_snapshots`, the snapshots holding
+    /// the entry are removed in the same commit (0007 §3.2–3.3, plan 0059).
+    pub fn purge_history(&self, entry: EntryHandle, keep_snapshots: bool) -> Result<(), CoreError> {
         self.mutate(|ctx| {
             ctx.own(entry.session)?;
             if ctx.open.read_only {
@@ -360,10 +362,13 @@ impl Session {
             if r.status.finally_deleted {
                 return Err(CoreError::NotFound);
             }
-            crate::snapshot::require_recovery(ctx)?;
             let cancel = ctx.canceller();
             let seq = ctx.open.vault.local_seq();
             let mut w = ctx.open.vault.write()?;
+            if !keep_snapshots {
+                w.keep_no_snapshot();
+                w.remove_snapshots_containing([entry.record]);
+            }
             w.purge_history(entry.record)?;
             #[cfg(test)]
             crate::session::hooks::reached(crate::session::hooks::Point::BeforeCommit);
@@ -438,7 +443,7 @@ mod tests {
         })
         .unwrap();
         assert!(s.history(e).unwrap().is_empty());
-        crate::testutil::destructive(&s, || s.purge_history(e)).unwrap();
+        s.purge_history(e, false).unwrap();
         s.read(|ctx| {
             let history = ctx
                 .open
@@ -501,7 +506,7 @@ mod tests {
             })
             .unwrap();
         let seq = s.overview().unwrap().local_seq;
-        crate::testutil::destructive(&s, || s.purge_history(e)).unwrap();
+        s.purge_history(e, false).unwrap();
         assert_eq!(s.overview().unwrap().local_seq, seq + 1);
         assert!(s.history(e).unwrap().is_empty());
         assert_eq!(err(s.history_entry(h)), CoreError::StaleHandle);
@@ -582,7 +587,7 @@ mod tests {
         std::fs::write(&env.anchors, b"blocked").unwrap();
         let seq = s.overview().unwrap().local_seq;
         assert_eq!(
-            err(crate::testutil::destructive(&s, || s.purge_history(e))),
+            err(s.purge_history(e, false)),
             CoreError::Store(qv_store::StoreError::CommittedAnchorPending)
         );
         assert_eq!(s.overview().unwrap().local_seq, seq + 1);
@@ -682,7 +687,7 @@ mod tests {
             CoreError::Store(qv_store::StoreError::NoAnchor)
         );
         assert_eq!(
-            err(s.purge_history(e)),
+            err(s.purge_history(e, false)),
             CoreError::Store(qv_store::StoreError::NoAnchor)
         );
     }

@@ -6,9 +6,9 @@
 //! handles never leave Rust, and late worker results are dropped after a lock.
 use crate::controller::{AppError, Controller, FormEpoch, Phase, State, Worker};
 use qv_core::{
-    AttachmentHandle, CancelToken, CoreError, EntryDraft, EntryHandle, FieldHandle, FieldId,
-    FieldKind, Generated, GroupDraft, GroupHandle, ItemHandle, RecoveryPhrase, SecretBytes,
-    Session, SettingsDraft,
+    AttachmentHandle, CancelToken, CoreError, DeletionTarget, EntryDraft, EntryHandle, FieldHandle,
+    FieldId, FieldKind, Generated, GroupDraft, GroupHandle, ItemHandle, RecoveryPhrase,
+    SecretBytes, Session, SettingsDraft,
 };
 use std::collections::BTreeMap;
 use std::sync::{
@@ -469,6 +469,9 @@ pub enum WsAction {
     LanSync,
     /// Answer the pending confirmation.
     Answer(bool),
+    /// In a permanent deletion's confirmation: keep the snapshots that hold
+    /// the deleted data (0007 §3.3; they are removed otherwise).
+    KeepSnapshots(bool),
     /// Dismiss the current notice or report.
     Dismiss,
 }
@@ -477,14 +480,15 @@ pub enum WsAction {
 pub enum ConfirmKind {
     /// Delete a non-empty group with its contents.
     DeleteRecursive,
-    /// Empty the trash.
-    EmptyTrash,
-    /// Purge expired trash, with a clock warning when needed.
-    PurgeExpired(bool),
-    /// Purge an entry's history.
-    PurgeHistory,
-    /// Remove an attachment.
-    RemoveAttachment,
+    /// Empty the trash; how many snapshots hold its items.
+    EmptyTrash(usize),
+    /// Purge expired trash, with a clock warning when needed; how many
+    /// snapshots hold the items.
+    PurgeExpired(bool, usize),
+    /// Purge an entry's history; how many snapshots hold the entry.
+    PurgeHistory(usize),
+    /// Remove an attachment; how many snapshots hold it.
+    RemoveAttachment(usize),
     /// Write attachment plaintext to the chosen destination.
     SaveAttachment,
     /// Include the password slot in an exported archive.
@@ -503,11 +507,15 @@ pub enum ConfirmKind {
     ReducedQuick,
     /// Link an OS-verified app identity to an entry.
     LinkApp,
+    /// Add an attachment of this many bytes (over 256 MiB).
+    LargeAttachment(u64),
 }
 struct Pending {
     kind: ConfirmKind,
     action: WsAction,
     over_budget: bool,
+    /// "Keep in snapshots" is ticked (permanent deletions only).
+    keep: bool,
 }
 /// The entry form wraps an owned core draft; protected values stay in it or
 /// in protected replacements and are never prefilled into inputs.
@@ -619,6 +627,9 @@ pub struct Workspace {
     pub(crate) generated: Option<(Generated, Instant)>,
     reveal: Option<(RevealKey, SecretBytes, Instant)>,
     pending: Option<Pending>,
+    /// The answered deletion keeps the snapshots holding its data; taken
+    /// by the deletion when it runs.
+    pub(crate) keep_snapshots: bool,
     pub(crate) notice: Option<&'static str>,
     pub(crate) error: Option<AppError>,
     pub(crate) report: Option<Report>,
@@ -726,6 +737,7 @@ impl Workspace {
             generated: None,
             reveal: None,
             pending: None,
+            keep_snapshots: false,
             notice: None,
             error: None,
             report: None,
@@ -845,12 +857,18 @@ impl Workspace {
     pub(crate) fn pending(&self) -> Option<ConfirmKind> {
         self.pending.as_ref().map(|p| p.kind)
     }
+    /// Whether the pending deletion keeps the snapshots holding its data.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))] // Read by the UI.
+    pub(crate) fn pending_keep(&self) -> bool {
+        self.pending.as_ref().is_some_and(|p| p.keep)
+    }
     /// Ask for a typed confirmation before re-dispatching `action`.
     pub(crate) fn set_pending(&mut self, kind: ConfirmKind, action: WsAction, over_budget: bool) {
         self.pending = Some(Pending {
             kind,
             action,
             over_budget,
+            keep: false,
         });
     }
 }
@@ -1224,7 +1242,19 @@ impl Controller {
                 return Ok(());
             }
             let over = p.over_budget || matches!(p.kind, ConfirmKind::OverBudget(_));
+            let keep = p.keep;
+            self.with_ws(epoch, |ws, _| ws.keep_snapshots = keep)
+                .ok_or(AppError::InvalidInput)?;
             return self.dispatch(epoch, p.action, true, over);
+        }
+        if let WsAction::KeepSnapshots(keep) = action {
+            return self
+                .with_ws(epoch, |ws, _| {
+                    if let Some(p) = ws.pending.as_mut() {
+                        p.keep = keep;
+                    }
+                })
+                .ok_or(AppError::InvalidInput);
         }
         if !confirmed && let Some(kind) = self.needs_confirmation(epoch, &action)? {
             self.with_ws(epoch, |ws, _| {
@@ -1232,6 +1262,7 @@ impl Controller {
                     kind,
                     action,
                     over_budget,
+                    keep: false,
                 })
             })
             .ok_or(AppError::InvalidInput)?;
@@ -1264,16 +1295,39 @@ impl Controller {
                 Some(ConfirmKind::ReducedQuick)
             }
             WsAction::AutofillLink(_) => Some(ConfirmKind::LinkApp),
-            WsAction::EmptyTrash => Some(ConfirmKind::EmptyTrash),
+            WsAction::EmptyTrash => {
+                Some(ConfirmKind::EmptyTrash(self.holding(epoch, |s| {
+                    s.snapshots_holding(DeletionTarget::Trash)
+                })?))
+            }
             WsAction::PurgeExpired => {
                 let anomaly = self
                     .read(epoch, |s| Ok(s.expiry_summary()?.clock_anomaly))
                     .ok_or(AppError::InvalidInput)??;
-                Some(ConfirmKind::PurgeExpired(anomaly))
+                let holding = self.holding(epoch, |s| {
+                    let items = s.expired_handles()?;
+                    s.snapshots_holding(DeletionTarget::Items(&items))
+                })?;
+                Some(ConfirmKind::PurgeExpired(anomaly, holding))
             }
-            WsAction::PurgeHistory(_) => Some(ConfirmKind::PurgeHistory),
-            WsAction::RemoveAttachment(_) => Some(ConfirmKind::RemoveAttachment),
+            WsAction::PurgeHistory(entry) => {
+                let entry = *entry;
+                Some(ConfirmKind::PurgeHistory(self.holding(epoch, |s| {
+                    s.snapshots_holding(DeletionTarget::History(entry))
+                })?))
+            }
+            WsAction::RemoveAttachment(handle) => {
+                let handle = *handle;
+                Some(ConfirmKind::RemoveAttachment(self.holding(epoch, |s| {
+                    s.snapshots_holding(DeletionTarget::Attachment(handle))
+                })?))
+            }
             WsAction::SaveAttachment(_) => Some(ConfirmKind::SaveAttachment),
+            WsAction::AddAttachment(_) => self
+                .peek(epoch, crate::documents::attachment_size)
+                .ok_or(AppError::InvalidInput)?
+                .filter(|&n| n > crate::documents::LARGE_ATTACHMENT)
+                .map(ConfirmKind::LargeAttachment),
             WsAction::ExportArchive(true) => Some(ConfirmKind::SelfContained),
             WsAction::Resolve(record, version) => {
                 let final_delete = self
@@ -1290,6 +1344,14 @@ impl Controller {
             }
             _ => None,
         })
+    }
+    /// How many snapshots hold what a deletion would delete (0007 §3.3).
+    fn holding(
+        &self,
+        epoch: FormEpoch,
+        count: impl FnOnce(&Session) -> Result<usize, CoreError>,
+    ) -> Result<usize, AppError> {
+        self.read(epoch, count).ok_or(AppError::InvalidInput)?
     }
     /// Run one vault operation on the single worker. Lock cancels it; a late
     /// result from an older lock generation is dropped, never applied.
@@ -1361,6 +1423,7 @@ impl Controller {
                                     kind: ConfirmKind::OverBudget(needed),
                                     action,
                                     over_budget: true,
+                                    keep: false,
                                 });
                             }
                         }

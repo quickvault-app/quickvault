@@ -85,6 +85,8 @@ pub struct Write<'v> {
     /// The new `lan_link` row set, when this write changes it: always
     /// empty, to clear rows left by a file written before 0014 (0013 §9.1).
     links: Option<Vec<crate::lan_store::StoredLink>>,
+    /// What this commit does with local snapshots (plan 0059).
+    snapshots: crate::snapshot_commit::Request,
 }
 
 impl core::fmt::Debug for Write<'_> {
@@ -199,6 +201,7 @@ impl UnlockedVault {
             None => (self.state.writer, self.state.replica.next_counter),
         };
         let manifest = self.state.manifest.clone();
+        let armed = self.state.armed;
         // Every commit writes the empty link set (0013 §9.1, plan 0042).
         let links = (!self.state.links.is_empty()).then(Vec::new);
         Ok(Write {
@@ -219,11 +222,47 @@ impl UnlockedVault {
             finished: false,
             receipt_blob: None,
             links,
+            snapshots: crate::snapshot_commit::Request {
+                keep: armed,
+                ..crate::snapshot_commit::Request::default()
+            },
         })
     }
 }
 
 impl Write<'_> {
+    /// Keeps the manifest this commit replaces as a local snapshot of `kind`
+    /// made at `now`, then prunes to `budgets` (0007 §3.2–3.3). Nothing is
+    /// kept when the commit changes no stored object, or when the newest
+    /// snapshot already holds the same objects; an ordinary snapshot that
+    /// does not fit the byte budget even alone is skipped, never the commit.
+    pub fn keep_snapshot(
+        &mut self,
+        kind: crate::SnapshotKind,
+        now: qv_model::Timestamp,
+        budgets: crate::SnapshotBudgets,
+    ) {
+        self.snapshots.keep = Some((kind, now, budgets));
+    }
+
+    /// Keeps no snapshot in this commit, even when the session is armed
+    /// (a permanent deletion that also removes the deleted data from
+    /// snapshots, 0007 §3.3).
+    pub fn keep_no_snapshot(&mut self) {
+        self.snapshots.keep = None;
+    }
+
+    /// Removes these local snapshots in this commit.
+    pub fn remove_snapshots(&mut self, ids: &[[u8; 16]]) {
+        self.snapshots.remove.extend(ids.iter().copied());
+    }
+
+    /// Removes, in this commit, every local snapshot whose manifest has any
+    /// of these records (0007 §3.3: permanent deletion).
+    pub fn remove_snapshots_containing(&mut self, records: impl IntoIterator<Item = RecordId>) {
+        self.snapshots.containing.extend(records);
+    }
+
     /// Stages a fresh operational password descriptor. The caller must write
     /// the identical complete descriptor as the encrypted keyslot head in
     /// this transaction; commit checks that binding before changing SQL state.
@@ -276,6 +315,18 @@ impl Write<'_> {
         source: &mut impl std::io::Read,
         cancelled: &impl Fn() -> bool,
     ) -> Result<crate::StagedAttachment, StoreError> {
+        self.stage_attachment_up_to(record, source, cancelled, qv_model::MAX_ATTACHMENT_BYTES)
+    }
+
+    /// [`Self::stage_attachment`] under a smaller bound, so tests reach the
+    /// limit without streaming 2 GiB.
+    pub(crate) fn stage_attachment_up_to(
+        &mut self,
+        record: RecordId,
+        source: &mut impl std::io::Read,
+        cancelled: &impl Fn() -> bool,
+        max: u64,
+    ) -> Result<crate::StagedAttachment, StoreError> {
         if self
             .manifest
             .records()
@@ -293,7 +344,7 @@ impl Write<'_> {
             self.poisoned = true;
             return Err(StoreError::InvalidEdit);
         }
-        let result = self.stage_content(record, source, cancelled);
+        let result = self.stage_content(record, source, cancelled, max);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -304,6 +355,7 @@ impl Write<'_> {
         record: RecordId,
         source: &mut impl std::io::Read,
         cancelled: &impl Fn() -> bool,
+        max: u64,
     ) -> Result<crate::StagedAttachment, StoreError> {
         use qv_crypto::{ContentHasher, SecretArray, SecretBytes, purpose};
         let header = self.vault.file.header;
@@ -323,8 +375,8 @@ impl Write<'_> {
                 if cancelled() {
                     return Err(StoreError::Io);
                 }
-                let allowed = (qv_model::MAX_ATTACHMENT_BYTES - size - filled as u64 + 1)
-                    .min((buf.len() - filled) as u64) as usize;
+                let allowed =
+                    (max - size - filled as u64 + 1).min((buf.len() - filled) as u64) as usize;
                 let n = match source.read(&mut buf.expose_secret_mut()[filled..filled + allowed]) {
                     Ok(n) => n,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -334,7 +386,7 @@ impl Write<'_> {
                     break;
                 }
                 filled += n;
-                if size + filled as u64 > qv_model::MAX_ATTACHMENT_BYTES {
+                if size + filled as u64 > max {
                     return Err(StoreError::LimitExceeded);
                 }
             }
@@ -342,7 +394,7 @@ impl Write<'_> {
                 break;
             }
             if chunks.len() >= crate::MAX_CHUNKS
-                || self.manifest.references().len() >= crate::MAX_OBJECTS
+                || self.manifest.references().len() >= crate::MAX_REFERENCES
             {
                 return Err(StoreError::LimitExceeded);
             }
@@ -736,9 +788,36 @@ impl Write<'_> {
                 Some(rows) => crate::lan_store::digest(rows)?,
                 None => old.head.lan_links_digest,
             },
+            snapshot_index_digest: old.head.snapshot_index_digest,
         };
-        let (stored_head, digest) = sign_head(&self.keys, &header, &head)?;
         let old_hash = old.head.manifest_hash;
+        let planned = crate::snapshot_commit::plan(
+            &crate::snapshot_commit::Inputs {
+                conn: &self.vault.file.conn,
+                keys: &self.keys,
+                header: &header,
+                old: old.snapshots.as_ref(),
+                replaced: (&old.manifest, old_hash),
+                live: (&self.manifest, sealed.hash),
+            },
+            &self.snapshots,
+            cancelled,
+        )?;
+        let upgrade = planned.is_some() && old.snapshots.is_none();
+        let index_blob = planned
+            .as_ref()
+            .map(|p| crate::snapshot_index::seal(&p.index, &self.keys, &header))
+            .transpose()?;
+        let mut head = head;
+        if let Some(blob) = &index_blob {
+            head.snapshot_index_digest = Some(crate::snapshot_index::digest(blob));
+        }
+        let retained = planned
+            .as_ref()
+            .map(|p| &p.index)
+            .or(old.snapshots.as_ref());
+        let keep_old_manifest = retained.is_some_and(|i| i.names_manifest(&old_hash));
+        let (stored_head, digest) = sign_head(&self.keys, &header, &head)?;
         let growth = self.growth.saturating_add(len64(sealed.ciphertext.len()));
 
         let conn = &self.vault.file.conn;
@@ -766,12 +845,29 @@ impl Write<'_> {
             }
             point(CrashPoint::LanLinksWritten)?;
         }
+        if let Some(blob) = &index_blob {
+            if upgrade {
+                schema::upgrade(conn).map_err(w)?;
+            }
+            crate::snapshot_index::store(conn, blob, upgrade).map_err(w)?;
+        }
         insert_manifest(conn, &sealed)?;
-        conn.execute(
-            "DELETE FROM manifest WHERE manifest_hash = ?1",
-            [old_hash.as_slice()],
-        )
-        .map_err(w)?;
+        if !keep_old_manifest {
+            conn.execute(
+                "DELETE FROM manifest WHERE manifest_hash = ?1",
+                [old_hash.as_slice()],
+            )
+            .map_err(w)?;
+        }
+        for hash in planned.iter().flat_map(|p| &p.drop_manifests) {
+            if *hash != sealed.hash {
+                conn.execute(
+                    "DELETE FROM manifest WHERE manifest_hash = ?1",
+                    [hash.as_slice()],
+                )
+                .map_err(w)?;
+            }
+        }
         point(CrashPoint::ManifestWritten)?;
         conn.execute(
             "UPDATE local_head SET body = ?1, mac = ?2 WHERE id = 1",
@@ -802,7 +898,8 @@ impl Write<'_> {
             .iter()
             .map(ObjectRef::object_id)
             .chain(candidate_objects)
-            .filter(|id| !kept.contains(id))
+            .chain(planned.iter().flat_map(|p| p.released.iter().copied()))
+            .filter(|id| !kept.contains(id) && !retained.is_some_and(|i| i.retains(*id)))
             .collect();
         for id in removed {
             conn.execute(
@@ -843,6 +940,17 @@ impl Write<'_> {
         state.writer = self.writer;
         if let Some(rows) = self.links.take() {
             state.links = rows;
+        }
+        if let Some(planned) = planned {
+            if planned
+                .outcome
+                .kept
+                .is_some_and(|k| k.kind == crate::SnapshotKind::Ordinary)
+            {
+                state.armed = None;
+            }
+            state.snapshots = Some(planned.index);
+            state.last_snapshot = Some(planned.outcome);
         }
         self.vault.gate = WriteGate::AnchorPending;
         point(CrashPoint::Committed).map_err(|_| StoreError::CommittedAnchorPending)?;
@@ -1955,6 +2063,32 @@ mod attachment_tests {
             assert_eq!(count(&u), initial);
             assert_eq!(u.local_seq(), seq);
         }
+        // One byte over the bound fails before the commit and changes nothing;
+        // exactly the bound stages (a smaller bound stands in for 2 GiB).
+        let max = 3 * 65_536 + 7;
+        let mut w = u.write().unwrap();
+        assert_eq!(
+            w.stage_attachment_up_to(
+                RecordId::generate().unwrap(),
+                &mut &vec![5; max as usize + 1][..],
+                &|| false,
+                max,
+            )
+            .err(),
+            Some(StoreError::LimitExceeded)
+        );
+        assert!(w.commit().is_err());
+        assert_eq!((count(&u), u.local_seq()), (initial, seq));
+        let mut w = u.write().unwrap();
+        let staged = w
+            .stage_attachment_up_to(
+                RecordId::generate().unwrap(),
+                &mut &vec![5; max as usize][..],
+                &|| false,
+                max,
+            )
+            .unwrap();
+        drop(staged);
     }
     #[test]
     fn attachment_authenticated_wrong_hash_reorder_and_context_fail() {
@@ -2352,7 +2486,7 @@ impl Write<'_> {
                 .checked_add(expected)
                 .ok_or(StoreError::LimitExceeded)?;
             hash.update(bytes.expose_secret());
-            if self.manifest.references().len() >= crate::MAX_OBJECTS {
+            if self.manifest.references().len() >= crate::MAX_REFERENCES {
                 return Err(StoreError::LimitExceeded);
             }
             let id = ObjectId::generate()?;

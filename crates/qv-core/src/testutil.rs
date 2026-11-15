@@ -66,16 +66,6 @@ pub(crate) fn set_mode(path: &Path, mode: u32) {
     qv_win::fs::chmod_like(path, mode).unwrap();
 }
 
-/// Wine keeps a deleted name listed while a handle is open (NTFS removes
-/// it); checks of that skip there. The runner sets `QV_WINE=1`.
-pub(crate) fn wine_keeps_deleted_names() -> bool {
-    let wine = cfg!(windows) && std::env::var_os("QV_WINE").is_some();
-    if wine {
-        eprintln!("skipped under Wine: deleted names linger while open");
-    }
-    wine
-}
-
 /// Wine does not enforce a DACL that removes the owner's write right; the
 /// test runner sets `QV_WINE=1` (never set on Windows).
 pub(crate) fn wine_ignores_read_only_dacl() -> bool {
@@ -242,20 +232,6 @@ pub(crate) fn err<T>(r: Result<T, crate::CoreError>) -> crate::CoreError {
         Ok(_) => panic!("unexpectedly succeeded"),
         Err(e) => e,
     }
-}
-
-/// Exercise the production copy/authorize/mutate/complete flow. Callers must
-/// configure a real SnapshotPolicy; this helper grants no test-only bypass.
-pub(crate) fn destructive<T>(
-    s: &Session,
-    f: impl FnOnce() -> Result<T, crate::CoreError>,
-) -> Result<T, crate::CoreError> {
-    let copy = s.begin_destructive(false, None)?;
-    let result = f();
-    let finished = s.finish_destructive(copy);
-    let value = result?;
-    finished?;
-    Ok(value)
 }
 
 /// The store's commit sequence number.

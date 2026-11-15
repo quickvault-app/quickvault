@@ -370,6 +370,19 @@ pub struct LanView {
     pub closes_in: Option<u64>,
 }
 
+/// While a round receives more than 256 MiB, its size and progress (0009
+/// §1.8, plan 0059). Sizes are of public ciphertext lengths only.
+fn progress_info(running: bool) -> Option<String> {
+    let (received, expected) = qv_core::receive_progress();
+    (running && expected > crate::documents::LARGE_ATTACHMENT).then(|| {
+        format!(
+            "Receiving {} of {}…",
+            crate::views::human_size(received),
+            crate::views::human_size(expected)
+        )
+    })
+}
+
 /// Only tests listen on and dial loopback (0013 §1.4); the app never does.
 #[cfg(test)]
 pub(crate) static TEST_LOOPBACK: std::sync::atomic::AtomicBool =
@@ -934,7 +947,7 @@ impl Controller {
             qr: run.qr.as_ref().and_then(|q| q.copy().ok()),
             endpoints: run.endpoints.clone(),
             seconds: run.seconds(),
-            info: run.info.clone(),
+            info: progress_info(run.done.is_none()).or_else(|| run.info.clone()),
             sas: run.sas.clone(),
             question: run.question.clone(),
             question_id: run.question_id,

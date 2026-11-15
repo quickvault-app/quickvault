@@ -3,7 +3,7 @@
 //! Session-bound attachment operations. Stream callbacks must not reenter Session.
 use crate::{
     CancelToken, CoreError, EntryHandle, Session,
-    edit::{Change, commit, commit_with},
+    edit::{Change, commit_with},
     error::{data, input},
     session::{Ctx, SessionTag},
     views::{decrypt, record},
@@ -16,7 +16,7 @@ use qv_model::{Extensions, Payload, RandomId, RecordBody, RecordKind, Text, Vers
 pub struct AttachmentHandle {
     session: SessionTag,
     entry: EntryHandle,
-    record: RecordId,
+    pub(crate) record: RecordId,
     version: VersionId,
 }
 impl core::fmt::Debug for AttachmentHandle {
@@ -227,11 +227,17 @@ impl Session {
         })
     }
 
-    /// Permanently removes this attachment using the existing causal tombstone path.
-    pub fn remove_attachment(&self, handle: AttachmentHandle) -> Result<(), CoreError> {
+    /// Permanently removes this attachment using the existing causal tombstone
+    /// path. Unless `keep_snapshots`, the snapshots holding it are removed in
+    /// the same commit (0007 §3.3, plan 0059).
+    pub fn remove_attachment(
+        &self,
+        handle: AttachmentHandle,
+        keep_snapshots: bool,
+    ) -> Result<(), CoreError> {
         self.mutate(|ctx| {
             validate(ctx, handle)?;
-            commit(
+            crate::edit::commit_deleting(
                 ctx,
                 vec![Change {
                     record: handle.record,
@@ -239,6 +245,8 @@ impl Session {
                     body: RecordBody::Tombstone(RecordKind::AttachmentMeta),
                     ext: Extensions::new(),
                 }],
+                vec![handle.record],
+                keep_snapshots,
             )
         })
     }
@@ -370,7 +378,7 @@ mod tests {
         s.verify_attachment(items[0].handle, None).unwrap();
         std::fs::remove_file(&env.anchors).unwrap();
         std::fs::rename(&held, &env.anchors).unwrap();
-        s.remove_attachment(items[0].handle).unwrap();
+        s.remove_attachment(items[0].handle, false).unwrap();
         drop(s);
         for file in std::fs::read_dir(&env.anchors).unwrap() {
             std::fs::remove_file(file.unwrap().path()).unwrap();
@@ -409,7 +417,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(err(s.remove_attachment(h)), CoreError::Conflict);
+        assert_eq!(err(s.remove_attachment(h, false)), CoreError::Conflict);
         assert_eq!(err(s.verify_attachment(h, None)), CoreError::Conflict);
         s.mutate(|ctx| {
             ctx.open
@@ -458,22 +466,12 @@ mod tests {
             assert_eq!(err(s.verify_attachment(h, None)), CoreError::NotFound);
             s.restore(crate::ItemHandle::Entry(e)).unwrap();
             s.verify_attachment(h, None).unwrap();
-            s.remove_attachment(h).unwrap();
+            s.remove_attachment(h, false).unwrap();
             assert!(s.attachments(e).unwrap().is_empty());
             assert_eq!(err(s.verify_attachment(h, None)), CoreError::NotFound);
         }
-        let seq = s.overview().unwrap().local_seq;
-        let mut oversized = Pattern {
-            remaining: 10 * 1024 * 1024 + 1,
-            offset: 0,
-            largest: 0,
-        };
-        assert_eq!(
-            err(s.add_attachment(e, "large", "x", &mut oversized, None)),
-            CoreError::Store(qv_store::StoreError::LimitExceeded)
-        );
-        assert_eq!(s.overview().unwrap().local_seq, seq);
-        assert!(s.attachments(e).unwrap().is_empty());
+        // The 2 GiB bound itself is covered by qv-store's staging test with
+        // a smaller stand-in bound (streaming 2 GiB here would be too slow).
         let h = s
             .add_attachment(e, "keep", "x", &mut &b"abc"[..], None)
             .unwrap();
@@ -533,7 +531,7 @@ mod tests {
             CoreError::Cancelled
         );
         s.delete(crate::ItemHandle::Entry(e), false).unwrap();
-        crate::testutil::destructive(&s, || s.purge(&[crate::ItemHandle::Entry(e)])).unwrap();
+        s.purge(&[crate::ItemHandle::Entry(e)], false).unwrap();
         s.read(|ctx| {
             let role = ctx.open.vault.manifest().record(h.record).unwrap();
             assert!(role.history().is_empty());

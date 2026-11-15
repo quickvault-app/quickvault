@@ -361,6 +361,9 @@ impl UnlockedVault {
                     // The replacement generation starts with no links
                     // (0013 §12.2).
                     lan_links_digest: crate::lan_store::empty_digest()?,
+                    snapshot_index_digest: Some(crate::snapshot_index::initialize(
+                        tx, &new_keys, &header,
+                    )?),
                 };
                 let (head, digest) = sign_head(&new_keys, &header, &head)?;
                 #[cfg(test)]

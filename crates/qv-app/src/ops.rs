@@ -12,8 +12,8 @@ use crate::workspace::{
 };
 use ctutils::CtEq;
 use qv_core::{
-    CancelToken, CoreError, Deletion, EntryHandle, FieldKind, FieldValue, MasterPassword,
-    PasswordVerdict, Session,
+    CoreError, Deletion, EntryHandle, FieldKind, FieldValue, MasterPassword, PasswordVerdict,
+    Session,
 };
 use std::path::{Path, PathBuf};
 
@@ -256,21 +256,12 @@ pub(crate) fn on_enter(ws: &mut Workspace, session: &Session) {
         _ => {}
     }
 }
-/// The mandatory recovery snapshot, the change, then reclassification. A
-/// failure before the change keeps everything; a reclassification failure
-/// after it is reported without hiding the committed change.
-fn with_snapshot<T>(
-    s: &Session,
-    over_budget: bool,
-    token: &CancelToken,
-    f: impl FnOnce() -> Result<T, CoreError>,
-) -> Result<(T, bool), AppError> {
-    let copy = s.begin_destructive(over_budget, Some(token))?;
-    let out = f()?;
-    let cleanup_failed = s.finish_destructive(copy).is_err();
-    Ok((out, cleanup_failed))
+/// The answered deletion's "Keep in snapshots" choice, taken once (0007
+/// §3.3): an unconfirmed or later action never inherits it.
+fn take_keep(c: &Controller, epoch: FormEpoch) -> bool {
+    c.with_ws(epoch, |ws, _| std::mem::take(&mut ws.keep_snapshots))
+        .unwrap_or(false)
 }
-const CLEANUP: &str = "Done. The recovery snapshot could not be reclassified and remains on disk.";
 
 /// Run one action.
 pub(crate) fn run(
@@ -392,11 +383,12 @@ pub(crate) fn run(
             .ok_or(AppError::InvalidInput)?,
         WsAction::SetHue(pick) => c
             .with_ws(epoch, |ws, _| -> Result<(), AppError> {
-                let token = |icon: Option<&qv_core::Text>| -> Result<Option<qv_core::Text>, AppError> {
-                    crate::editor::pick_colour(icon.map(qv_core::Text::expose), pick)?
-                        .map(|t| qv_core::Text::new(&t).map_err(|_| AppError::InvalidInput))
-                        .transpose()
-                };
+                let token =
+                    |icon: Option<&qv_core::Text>| -> Result<Option<qv_core::Text>, AppError> {
+                        crate::editor::pick_colour(icon.map(qv_core::Text::expose), pick)?
+                            .map(|t| qv_core::Text::new(&t).map_err(|_| AppError::InvalidInput))
+                            .transpose()
+                    };
                 if ws.screen == Screen::EditGroup {
                     let g = ws.group_form.as_mut().ok_or(AppError::InvalidInput)?;
                     let icon = token(g.draft.group().icon.as_ref())?;
@@ -411,7 +403,8 @@ pub(crate) fn run(
             .ok_or(AppError::InvalidInput)?,
         WsAction::AddField(kind) => c
             .with_ws(epoch, |ws, _| -> Result<(), AppError> {
-                let typed = zeroize::Zeroizing::new(ws.text(WsField::NewFieldName)?.trim().to_owned());
+                let typed =
+                    zeroize::Zeroizing::new(ws.text(WsField::NewFieldName)?.trim().to_owned());
                 let (kind, protected) = match kind {
                     Some(k) => (k, k.protected_by_default()),
                     None => crate::editor::kind_for(&typed),
@@ -648,25 +641,47 @@ pub(crate) fn run(
                 let (name, size, count) = (row.name.clone(), row.size, rows.len());
                 // Install only when the worker result is applied to this session.
                 Ok(Box::new(move |state: &mut crate::controller::State| {
-                    let Some(session) = state.session.as_ref() else { return; };
+                    let Some(session) = state.session.as_ref() else {
+                        return;
+                    };
                     let weak = std::sync::Arc::downgrade(session);
-                    let Some(ws) = state.workspace.as_mut() else { return; };
+                    let Some(ws) = state.workspace.as_mut() else {
+                        return;
+                    };
                     match crate::preview::open(prepared, weak, handle, size) {
-                        Ok(o) => ws.preview = Some(crate::preview::PreviewView {
-                            handle, entry, name, size, kind: o.kind, mime: o.mime,
-                            src: o.src, text: o.text, cut: o.cut, image_load: o.image_load, index, count,
-                        }),
+                        Ok(o) => {
+                            ws.preview = Some(crate::preview::PreviewView {
+                                handle,
+                                entry,
+                                name,
+                                size,
+                                kind: o.kind,
+                                mime: o.mime,
+                                src: o.src,
+                                text: o.text,
+                                cut: o.cut,
+                                image_load: o.image_load,
+                                index,
+                                count,
+                            })
+                        }
                         Err(e) => ws.error = Some(e),
                     }
                 }))
             })
         }
-        WsAction::LoadPreview(handle) => c.with_ws(epoch, |ws, _| {
-            let preview = ws.preview.as_mut().filter(|p| p.handle == handle && p.image_load.is_some()).ok_or(AppError::InvalidInput)?;
-            crate::preview::allow_image(handle)?;
-            preview.image_load = None;
-            Ok(())
-        }).ok_or(AppError::InvalidInput)?,
+        WsAction::LoadPreview(handle) => c
+            .with_ws(epoch, |ws, _| {
+                let preview = ws
+                    .preview
+                    .as_mut()
+                    .filter(|p| p.handle == handle && p.image_load.is_some())
+                    .ok_or(AppError::InvalidInput)?;
+                crate::preview::allow_image(handle)?;
+                preview.image_load = None;
+                Ok(())
+            })
+            .ok_or(AppError::InvalidInput)?,
         WsAction::PreviewStep(step) => {
             let (entry, index) = c
                 .peek(epoch, |ws| ws.preview.as_ref().map(|p| (p.entry, p.index)))
@@ -702,8 +717,8 @@ pub(crate) fn run(
         WsAction::ColourMany(entries, pick) => c.run_op(epoch, None, move |s, _, _| {
             match pick {
                 Some(n) => {
-                    let token = crate::editor::pick_colour(None, Some(n))?
-                        .ok_or(AppError::InvalidInput)?;
+                    let token =
+                        crate::editor::pick_colour(None, Some(n))?.ok_or(AppError::InvalidInput)?;
                     s.set_entry_icons(&entries, Some(&token))?;
                 }
                 // Automatic removes only colour tokens; other icons stay
@@ -712,7 +727,9 @@ pub(crate) fn run(
                     let mut coloured = Vec::new();
                     for entry in &entries {
                         let detail = s.entry(*entry)?;
-                        if crate::editor::colour(detail.icon.as_ref().map(qv_core::Text::expose)).is_some() {
+                        if crate::editor::colour(detail.icon.as_ref().map(qv_core::Text::expose))
+                            .is_some()
+                        {
                             coloured.push(*entry);
                         }
                     }
@@ -729,44 +746,55 @@ pub(crate) fn run(
                 ws.notice = Some("Restored from the trash.");
             }))
         }),
-        WsAction::EmptyTrash => c.run_op(epoch, retry, move |s, token, _| {
-            let (report, cleanup) = with_snapshot(s, over_budget, token, || s.empty_trash())?;
-            Ok(on_ws(move |ws| {
-                ws.report = Some(Report::Purged {
-                    purged: report.purged,
-                    kept: report.skipped_conflicts,
-                });
-                ws.notice = cleanup.then_some(CLEANUP);
-            }))
-        }),
-        WsAction::PurgeExpired => c.run_op(epoch, retry, move |s, token, _| {
-            let items: Vec<_> = s.expired_handles()?;
-            let count = items.len();
-            let ((), cleanup) = with_snapshot(s, over_budget, token, || s.purge(&items))?;
-            Ok(on_ws(move |ws| {
-                ws.report = Some(Report::Purged {
-                    purged: count,
-                    kept: 0,
-                });
-                ws.notice = cleanup.then_some(CLEANUP);
-            }))
-        }),
-        WsAction::RestoreHistory(entry, version, resolve) => c.run_op(epoch, None, move |s, _, _| {
-            let h = history_handle(s, entry, &version)?;
-            let entry = s.restore_history(h, resolve)?;
-            Ok(on_ws(move |ws| {
-                ws.screen = Screen::Entry(entry);
-                ws.notice = Some("Restored as a new version.");
-            }))
-        }),
-        WsAction::PurgeHistory(entry) => c.run_op(epoch, retry, move |s, token, _| {
-            let ((), cleanup) = with_snapshot(s, over_budget, token, || s.purge_history(entry))?;
-            Ok(on_ws(move |ws| {
-                ws.notice = Some(if cleanup { CLEANUP } else {
-                    "Local history suppressed. Snapshots, unseen concurrent history and independent copies may remain; no secure erasure."
-                })
-            }))
-        }),
+        WsAction::EmptyTrash => {
+            let keep = take_keep(c, epoch);
+            c.run_op(epoch, None, move |s, _, _| {
+                let report = s.empty_trash(keep)?;
+                Ok(on_ws(move |ws| {
+                    ws.report = Some(Report::Purged {
+                        purged: report.purged,
+                        kept: report.skipped_conflicts,
+                    });
+                }))
+            })
+        }
+        WsAction::PurgeExpired => {
+            let keep = take_keep(c, epoch);
+            c.run_op(epoch, None, move |s, _, _| {
+                let items: Vec<_> = s.expired_handles()?;
+                let count = items.len();
+                s.purge(&items, keep)?;
+                Ok(on_ws(move |ws| {
+                    ws.report = Some(Report::Purged {
+                        purged: count,
+                        kept: 0,
+                    });
+                }))
+            })
+        }
+        WsAction::RestoreHistory(entry, version, resolve) => {
+            c.run_op(epoch, None, move |s, _, _| {
+                let h = history_handle(s, entry, &version)?;
+                let entry = s.restore_history(h, resolve)?;
+                Ok(on_ws(move |ws| {
+                    ws.screen = Screen::Entry(entry);
+                    ws.notice = Some("Restored as a new version.");
+                }))
+            })
+        }
+        WsAction::PurgeHistory(entry) => {
+            let keep = take_keep(c, epoch);
+            c.run_op(epoch, None, move |s, _, _| {
+                s.purge_history(entry, keep)?;
+                Ok(on_ws(move |ws| {
+                    ws.notice = Some(if keep {
+                        "Local history suppressed. The snapshots you kept, unseen concurrent history and independent copies may remain; no secure erasure."
+                    } else {
+                        "Local history suppressed. Unseen concurrent history and independent copies may remain; no secure erasure."
+                    })
+                }))
+            })
+        }
         WsAction::Resolve(record, version) => {
             let password = c
                 .peek(epoch, |ws| password(ws, WsField::Password).ok())
@@ -783,11 +811,10 @@ pub(crate) fn run(
                 } else {
                     None
                 };
-                let (r, cleanup) = if selected.state == qv_core::Deletion::Final {
-                    with_snapshot(s, over_budget, token, || s.resolve_version(&h, pw.as_ref(), Some(token)))?
-                } else { (s.resolve_version(&h, pw.as_ref(), Some(token))?, false) };
+                // A final-deletion choice keeps the pre-resolution state as a
+                // recovery snapshot inside the vault (0007 §3.2).
+                let r = s.resolve_version(&h, pw.as_ref(), Some(token))?;
                 Ok(on_ws(move |ws| {
-                    ws.notice = cleanup.then_some(CLEANUP);
                     ws.screen = Screen::Conflicts;
                     ws.report = Some(Report::Resolved {
                         conflicts: r.conflicts,
@@ -837,7 +864,7 @@ pub(crate) fn run(
                 .ok_or(AppError::InvalidInput)??;
             c.run_op(epoch, retry, move |s, token, ctl| {
                 let source = crate::documents::stage_import(ctl, source, token)?;
-                let result = s.merge_archive(source.path(), over_budget, Some(token));
+                let result = s.merge_archive(source.path(), Some(token));
                 drop(source);
                 let r = result?;
                 Ok(on_ws(move |ws| {
@@ -862,7 +889,8 @@ pub(crate) fn run(
                 if s.entry_version_count(entry)? > 1 {
                     return Err(AppError::Conflict);
                 }
-                let (mut reader, default_name) = crate::documents::open_attachment(ctl, source, token)?;
+                let (mut reader, default_name) =
+                    crate::documents::open_attachment(ctl, source, token)?;
                 let name = if name.is_empty() { default_name } else { name };
                 let mime = if mime.is_empty() {
                     "application/octet-stream"
@@ -895,14 +923,17 @@ pub(crate) fn run(
                 }
             })
         }
-        WsAction::RemoveAttachment(handle) => c.run_op(epoch, None, move |s, _, _| {
-            s.remove_attachment(handle)?;
-            Ok(on_ws(|ws| {
-                ws.notice = Some(
-                    "Attachment removed. Independent copies may remain; no secure erasure.",
-                )
-            }))
-        }),
+        WsAction::RemoveAttachment(handle) => {
+            let keep = take_keep(c, epoch);
+            c.run_op(epoch, None, move |s, _, _| {
+                s.remove_attachment(handle, keep)?;
+                Ok(on_ws(|ws| {
+                    ws.notice = Some(
+                        "Attachment removed. Independent copies may remain; no secure erasure.",
+                    )
+                }))
+            })
+        }
         WsAction::GenMode(mode) => c
             .with_ws(epoch, |ws, _| {
                 ws.generator.mode = mode;
@@ -932,11 +963,17 @@ pub(crate) fn run(
                 Ok(())
             })
             .ok_or(AppError::InvalidInput)?,
-        WsAction::SuggestPassword => c.with_ws(epoch, |ws, _| -> Result<(), AppError> {
-            ws.generated = Some((qv_core::generate(&qv_core::GeneratorSettings::Passphrase(
-                qv_core::PassphraseSettings::default()))?, std::time::Instant::now()));
-            Ok(())
-        }).ok_or(AppError::InvalidInput)?,
+        WsAction::SuggestPassword => c
+            .with_ws(epoch, |ws, _| -> Result<(), AppError> {
+                ws.generated = Some((
+                    qv_core::generate(&qv_core::GeneratorSettings::Passphrase(
+                        qv_core::PassphraseSettings::default(),
+                    ))?,
+                    std::time::Instant::now(),
+                ));
+                Ok(())
+            })
+            .ok_or(AppError::InvalidInput)?,
         WsAction::SaveGeneratorDefaults => {
             let settings = c
                 .peek(epoch, |ws| settings_from(&ws.generator))
@@ -970,7 +1007,9 @@ pub(crate) fn run(
         }
         WsAction::ChangePassword => change_password(c, epoch),
         WsAction::EnrollQuick(policy) => {
-            let pw = c.peek(epoch, |ws| password(ws, WsField::Password)).ok_or(AppError::InvalidInput)??;
+            let pw = c
+                .peek(epoch, |ws| password(ws, WsField::Password))
+                .ok_or(AppError::InvalidInput)??;
             c.run_op(epoch, None, move |s, token, c| {
                 s.enroll_quick(&pw, policy, Some(token))?;
                 c.set_quick_off(false);
@@ -980,7 +1019,9 @@ pub(crate) fn run(
         WsAction::DisableQuick => c.run_op(epoch, None, move |s, _, c| {
             s.disable_quick()?;
             c.set_quick_off(true);
-            Ok(on_ws(|ws| ws.notice = Some("Quick unlock is off; the hardware key was removed.")))
+            Ok(on_ws(|ws| {
+                ws.notice = Some("Quick unlock is off; the hardware key was removed.")
+            }))
         }),
         WsAction::AutofillFill(key) => {
             let (native, requester, roles) = c.autofill_bound().ok_or(AppError::AutofillExpired)?;
@@ -1033,7 +1074,9 @@ pub(crate) fn run(
                 .ok_or(AppError::InvalidInput)?;
             c.run_op(epoch, None, move |s, _, _| {
                 s.delete_snapshots(&ids)?;
-                Ok(on_ws(|ws| ws.notice = Some("Pre-change local snapshots deleted.")))
+                Ok(on_ws(|ws| {
+                    ws.notice = Some("Pre-change local snapshots deleted.")
+                }))
             })
         }
         WsAction::ShowPhrase => {
@@ -1077,7 +1120,7 @@ pub(crate) fn run(
         }),
         WsAction::LanOffer => crate::lan::offer(c, epoch),
         WsAction::LanSync => crate::lan::sync(c, epoch),
-        WsAction::Answer(_) => Err(AppError::InvalidInput),
+        WsAction::Answer(_) | WsAction::KeepSnapshots(_) => Err(AppError::InvalidInput),
     }
 }
 fn reveal_value(

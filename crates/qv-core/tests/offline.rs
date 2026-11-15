@@ -220,7 +220,7 @@ fn offline_lifecycle() {
         s.restore(ItemHandle::Group(old)).unwrap();
         s.delete(ItemHandle::Entry(tmp), false).unwrap();
         let copy = s.begin_destructive(false, None).unwrap();
-        s.purge(&[ItemHandle::Entry(tmp)]).unwrap();
+        s.purge(&[ItemHandle::Entry(tmp)], false).unwrap();
         s.finish_destructive(copy).unwrap();
         s.delete(ItemHandle::Group(old), true).unwrap();
 

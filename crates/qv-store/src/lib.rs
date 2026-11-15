@@ -39,7 +39,8 @@
 //! | `rotation_guard` | `.qvrotate` marker and reserved-name refusal | 0002 §3.5.4 |
 //! | `rotation_journal` | [`RotationJournal`] codec and independent MACs | 0002 §3.5.4 |
 //! | `rotation_install` | [`PreparedRotation::install`], [`InterruptedRotation`] (restart: complete or roll back), pre-journal leftovers | 0002 §3.5.4; 0005 §5.4 |
-//! | `snapshot_inventory` | [`SnapshotInventory`]: cross-generation snapshot accounting | 0007 §3.2–3.3 |
+//! | `snapshot_index` / `snapshot_commit` | Local snapshots inside the vault: the sealed head-bound index ([`SnapshotRow`]), what each commit keeps, prunes and releases ([`SnapshotBudgets`], [`SnapshotOutcome`]), listings ([`SnapshotDetail`]) and restore | 0004 §2.5; 0007 §3 |
+//! | `snapshot_inventory` | [`SnapshotInventory`]: cross-generation accounting of snapshot files | 0007 §3.2–3.3 |
 //! | `archive` | [`ArchiveHeader`], [`ArchiveScope`], framing, the archive writer and reader, [`SnapshotDir`] | 0004 §6; 0007 §3 |
 //! | `vault` | [`VaultFile`] (`create`, `open`, `unlock`, `unlock_for_recovery`) and [`UnlockedVault`] (verification, reads) | 0004 §3.6, §5.1, 0002 §8 |
 //! | `verify` | [`VerifyCounts`] and the full `verify` pass | 0004 §3.6 |
@@ -52,20 +53,22 @@
 //! | Item | Value |
 //! |------|-------|
 //! | `application_id` | `0x5156_4C54` ("QVLT") |
-//! | `user_version` and header `format` | `0x7FFF_0004` (schema 4) |
+//! | `user_version` | `0x7FFF_0005` (schema 5, adds `snapshot_index`; schema `0x7FFF_0004` opens and is upgraded by the first commit that needs the index) |
+//! | header `format` | `0x7FFF_0004` |
 //! | manifest `format` | `0x7FFF_0002` (permanent-tombstone roles) |
 //! | anchor `format` | `0x7FFF_0001` |
 //! | page size | 4096 |
-//! | [`MAX_DB_BYTES`] | 2 GiB, checked before SQLite opens the file |
+//! | [`MAX_DB_BYTES`] | 16 GiB, checked before SQLite opens the file |
 //! | [`MAX_HEADER_BYTES`], [`MAX_SLOTS`] | 64 KiB, 64 (0004 §4.1) |
-//! | manifest budgets | [`MAX_MANIFEST_CIPHERTEXT`] 64 MiB, [`MAX_RECORDS`] 50,000, [`MAX_OBJECTS`] 250,000, [`MAX_TOTAL_CIPHERTEXT`] 1 GiB, [`MAX_CLOCK_COMPONENTS`] 2^20, [`MAX_RECORD_CIPHERTEXT`] 1 MiB, [`MAX_CHUNKS`] 160 |
+//! | manifest budgets | [`MAX_MANIFEST_CIPHERTEXT`] 64 MiB, [`MAX_RECORDS`] 50,000, [`MAX_OBJECTS`] 250,000 plus [`MAX_CHUNK_OBJECTS`] 131,072 chunks, [`MAX_TOTAL_CIPHERTEXT`] 8 GiB, [`MAX_CLOCK_COMPONENTS`] 2^20, [`MAX_RECORD_CIPHERTEXT`] 1 MiB, [`MAX_CHUNKS`] 32,768 |
 //! | archive magic and version | [`ARCHIVE_MAGIC`] `"QVSNAP\0"`, [`ARCHIVE_FORMAT`] `0x01` |
 //! | archive budgets | [`MAX_ARCHIVE_HEADER_BYTES`] 64 KiB, [`MAX_ARCHIVE_MANIFEST_FRAME`], [`MAX_ARCHIVE_OBJECT_FRAME`], [`MAX_ARCHIVE_TOTAL_LENGTH`] |
 //! | initial key generation | 1 |
-//! | labels | `qv/record/v1`, `qv/manifest/v1`, `qv/config/v1`, `qv/local-head/v1`, `qv/header-mac/v1`, [`ARCHIVE_HEADER_LABEL`] |
+//! | labels | `qv/record/v1`, `qv/manifest/v1`, `qv/config/v1`, `qv/local-head/v1`, `qv/header-mac/v1`, `qv/snapshot-index/v1`, [`ARCHIVE_HEADER_LABEL`] |
 //!
 //! Tables (all `STRICT`; see `schema`): `header`, `keyslot`, `object`,
-//! `manifest`, `local_head`, `replica`, `archive_receipts`, `lan_link`. The
+//! `manifest` (the live row and kept snapshot rows), `local_head`, `replica`,
+//! `archive_receipts`, `lan_link`, `snapshot_index`. The
 //! header MAC is MAC/1 under the
 //! `header-mac` purpose key over `["qv/header-mac/v1", header_body,
 //! [[slot_id, type, body], …]]`, slots sorted by ID, exact stored bytes. The
@@ -248,7 +251,14 @@ mod schema;
 mod sink;
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 mod slot;
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+mod snapshot_commit;
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+mod snapshot_index;
 mod snapshot_inventory;
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+mod snapshot_tests;
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 mod sqlite;
 mod validation;
@@ -274,10 +284,10 @@ pub use anchor::{AnchorDir, MAX_ANCHOR_BYTES};
 pub use archive::{
     ARCHIVE_DERIVATION_PROFILE, ARCHIVE_EXTENSION, ARCHIVE_FORMAT, ARCHIVE_HEADER_LABEL,
     ARCHIVE_MAC_PROFILE, ARCHIVE_MAGIC, ArchiveHeader, ArchiveObject, ArchiveScope, ArchiveStats,
-    MAX_ARCHIVE_HEADER_BYTES, OpenedArchive, read_archive, read_header,
+    MAX_ARCHIVE_HEADER_BYTES, OpenedArchive, SnapshotKind, read_archive, read_header,
 };
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
-pub use archive::{PublishedSnapshot, SnapshotDir, SnapshotEntry, SnapshotKind};
+pub use archive::{PublishedSnapshot, SnapshotDir, SnapshotEntry};
 pub use attachment::StagedAttachment;
 pub use error::StoreError;
 pub use head::AnchorStatus;
@@ -294,9 +304,10 @@ pub use lan_staging::{
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 pub use lan_store::LanServeState;
 pub use limits::{
-    MAX_ARCHIVE_MANIFEST_FRAME, MAX_ARCHIVE_OBJECT_FRAME, MAX_ARCHIVE_TOTAL_LENGTH, MAX_CHUNKS,
-    MAX_CLOCK_COMPONENTS, MAX_DB_BYTES, MAX_HEADER_BYTES, MAX_MANIFEST_CIPHERTEXT, MAX_OBJECTS,
-    MAX_RECORD_CIPHERTEXT, MAX_RECORDS, MAX_SLOTS, MAX_TOTAL_CIPHERTEXT, PAGE_SIZE,
+    MAX_ARCHIVE_MANIFEST_FRAME, MAX_ARCHIVE_OBJECT_FRAME, MAX_ARCHIVE_TOTAL_LENGTH,
+    MAX_CHUNK_OBJECTS, MAX_CHUNKS, MAX_CLOCK_COMPONENTS, MAX_DB_BYTES, MAX_HEADER_BYTES,
+    MAX_MANIFEST_CIPHERTEXT, MAX_OBJECTS, MAX_RECORD_CIPHERTEXT, MAX_RECORDS, MAX_REFERENCES,
+    MAX_SLOTS, MAX_TOTAL_CIPHERTEXT, PAGE_SIZE,
 };
 pub use location::LocationWarnings;
 pub use receipts::{
@@ -319,6 +330,10 @@ pub use rotation_install::{InterruptedRotation, needed_passwords, rotation_pendi
 pub use rotation_journal::{
     MAX_ROTATION_JOURNAL_BYTES, RotationJournal, RotationJournalBody, RotationSide,
 };
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+pub use snapshot_commit::{SnapshotBudgets, SnapshotDetail, SnapshotOutcome};
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+pub use snapshot_index::{MAX_SNAPSHOTS, SnapshotRow};
 pub use snapshot_inventory::{
     InventoryRow, MAX_INVENTORY_BYTES, MAX_INVENTORY_ROWS, SnapshotInventory, UnverifiedInventory,
 };

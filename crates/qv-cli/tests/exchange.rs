@@ -97,7 +97,7 @@ fn exchange_cli_old_archive_keeps_suppression_and_receipts_survive_restart() {
     draft.entry_mut().title = qv_core::Text::new("current complete version").unwrap();
     s.save_entry(draft).unwrap();
     let copy = s.begin_destructive(false, None).unwrap();
-    s.purge_history(entry).unwrap();
+    s.purge_history(entry, false).unwrap();
     s.finish_destructive(copy).unwrap();
     let newer = s.export_archive(&directory, false, None).unwrap();
     s.lock();

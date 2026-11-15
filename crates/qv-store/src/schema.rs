@@ -40,14 +40,38 @@ use rusqlite::{Connection, ErrorCode, Transaction};
 
 use crate::error::StoreError;
 use crate::head::MAX_HEAD_BYTES;
-use crate::header::FORMAT;
 use crate::limits::{MAX_HEADER_BYTES, MAX_MANIFEST_CIPHERTEXT, MAX_SLOTS, PAGE_SIZE};
+use crate::snapshot_index::MAX_SNAPSHOTS;
 
 /// `PRAGMA application_id` of a vault: "QVLT".
 pub(crate) const APPLICATION_ID: i64 = 0x5156_4C54;
 
-/// `PRAGMA user_version` of the development schema.
-pub(crate) const SCHEMA_VERSION: i64 = FORMAT as i64;
+/// `PRAGMA user_version` of the development schema (plan 0059: separate
+/// from the header format, which stays `0x7FFF0004`).
+pub(crate) const SCHEMA_VERSION: i64 = 0x7FFF_0005;
+
+/// The schema before `snapshot_index`: still opened, and upgraded by the
+/// first write transaction (0004 §1.1).
+pub(crate) const SCHEMA_V4: i64 = 0x7FFF_0004;
+
+/// Which accepted schema a file has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Schema {
+    /// `0x7FFF0004`: no `snapshot_index` table, no snapshots.
+    V4,
+    /// `0x7FFF0005`: [`SCHEMA_VERSION`].
+    V5,
+}
+
+impl Schema {
+    /// Its `user_version`.
+    pub(crate) fn version(self) -> i64 {
+        match self {
+            Self::V4 => SCHEMA_V4,
+            Self::V5 => SCHEMA_VERSION,
+        }
+    }
+}
 
 const HEADER_DDL: &str = "CREATE TABLE header (id INTEGER PRIMARY KEY CHECK (id = 1), body BLOB NOT NULL, mac BLOB NOT NULL) STRICT";
 const KEYSLOT_DDL: &str = "CREATE TABLE keyslot (slot_id BLOB PRIMARY KEY CHECK (length(slot_id) = 16), type INTEGER NOT NULL, body BLOB NOT NULL) STRICT, WITHOUT ROWID";
@@ -58,9 +82,10 @@ const REPLICA_DDL: &str = "CREATE TABLE replica (id INTEGER PRIMARY KEY CHECK (i
 
 const RECEIPTS_DDL: &str = "CREATE TABLE archive_receipts (id INTEGER PRIMARY KEY CHECK (id = 1), sealed BLOB NOT NULL) STRICT";
 const LAN_LINK_DDL: &str = "CREATE TABLE lan_link (link_id BLOB PRIMARY KEY CHECK (length(link_id) = 16), key_generation INTEGER NOT NULL, sealed BLOB NOT NULL) STRICT, WITHOUT ROWID";
+const SNAPSHOT_INDEX_DDL: &str = "CREATE TABLE snapshot_index (id INTEGER PRIMARY KEY CHECK (id = 1), sealed BLOB NOT NULL) STRICT";
 
 /// Every table's DDL, in creation order.
-const TABLES: [&str; 8] = [
+const TABLES: [&str; 9] = [
     RECEIPTS_DDL,
     LAN_LINK_DDL,
     HEADER_DDL,
@@ -69,11 +94,44 @@ const TABLES: [&str; 8] = [
     MANIFEST_DDL,
     LOCAL_HEAD_DDL,
     REPLICA_DDL,
+    SNAPSHOT_INDEX_DDL,
 ];
 
-/// The exact `sqlite_schema` rows `(type, name, tbl_name, sql)`, sorted by
-/// name.
-const EXPECTED: [(&str, &str, &str, Option<&str>); 10] = [
+type Row = (
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+);
+
+/// The exact `sqlite_schema` rows of [`SCHEMA_VERSION`]
+/// `(type, name, tbl_name, sql)`, sorted by name.
+const EXPECTED: [Row; 11] = [
+    (
+        "table",
+        "archive_receipts",
+        "archive_receipts",
+        Some(RECEIPTS_DDL),
+    ),
+    ("table", "header", "header", Some(HEADER_DDL)),
+    ("table", "keyslot", "keyslot", Some(KEYSLOT_DDL)),
+    ("table", "lan_link", "lan_link", Some(LAN_LINK_DDL)),
+    ("table", "local_head", "local_head", Some(LOCAL_HEAD_DDL)),
+    ("table", "manifest", "manifest", Some(MANIFEST_DDL)),
+    ("table", "object", "object", Some(OBJECT_DDL)),
+    ("table", "replica", "replica", Some(REPLICA_DDL)),
+    (
+        "table",
+        "snapshot_index",
+        "snapshot_index",
+        Some(SNAPSHOT_INDEX_DDL),
+    ),
+    ("index", "sqlite_autoindex_manifest_1", "manifest", None),
+    ("index", "sqlite_autoindex_object_1", "object", None),
+];
+
+/// The exact rows of [`SCHEMA_V4`].
+const EXPECTED_V4: [Row; 10] = [
     (
         "table",
         "archive_receipts",
@@ -140,14 +198,21 @@ pub(crate) fn install(tx: &Transaction<'_>) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Upgrades a [`Schema::V4`] file inside the caller's write transaction:
+/// the table and the version change commit with the first new index row.
+pub(crate) fn upgrade(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(SNAPSHOT_INDEX_DDL)?;
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+}
+
 fn pragma_i64(conn: &Connection, name: &str) -> Result<i64, StoreError> {
     conn.pragma_query_value(None, name, |r| r.get(0)).map_err(v)
 }
 
 /// Checks the file format, integrity and exact schema; no vault table is
 /// read before this succeeds.
-pub(crate) fn validate_schema(conn: &Connection) -> Result<(), StoreError> {
-    identify_schema(conn)?;
+pub(crate) fn validate_schema(conn: &Connection) -> Result<Schema, StoreError> {
+    let schema = identify_schema(conn)?;
     let mut stmt = conn.prepare("PRAGMA quick_check(1)").map_err(v)?;
     let mut rows = stmt.query([]).map_err(v)?;
     let first = rows.next().map_err(v)?.ok_or(StoreError::Integrity)?;
@@ -155,17 +220,19 @@ pub(crate) fn validate_schema(conn: &Connection) -> Result<(), StoreError> {
     {
         return Err(StoreError::Integrity);
     }
-    Ok(())
+    Ok(schema)
 }
 
 /// Bounded identification only: never reads vault payloads or repairs a file.
-pub(crate) fn identify_schema(conn: &Connection) -> Result<(), StoreError> {
+pub(crate) fn identify_schema(conn: &Connection) -> Result<Schema, StoreError> {
     if pragma_i64(conn, "application_id")? != APPLICATION_ID {
         return Err(StoreError::NotAVault);
     }
-    if pragma_i64(conn, "user_version")? != SCHEMA_VERSION {
-        return Err(StoreError::Unsupported);
-    }
+    let (schema, expected): (Schema, &[Row]) = match pragma_i64(conn, "user_version")? {
+        SCHEMA_VERSION => (Schema::V5, &EXPECTED),
+        SCHEMA_V4 => (Schema::V4, &EXPECTED_V4),
+        _ => return Err(StoreError::Unsupported),
+    };
     if u64::try_from(pragma_i64(conn, "page_size")?).ok() != Some(PAGE_SIZE) {
         return Err(StoreError::Integrity);
     }
@@ -173,7 +240,7 @@ pub(crate) fn identify_schema(conn: &Connection) -> Result<(), StoreError> {
         .prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name LIMIT 17")
         .map_err(v)?;
     let mut rows = stmt.query([]).map_err(v)?;
-    for &(kind, name, table, sql) in &EXPECTED {
+    for &(kind, name, table, sql) in expected {
         let row = rows.next().map_err(v)?.ok_or(StoreError::Integrity)?;
         for (column, expected) in [(0, kind), (1, name), (2, table)] {
             if row.get_ref(column).map_err(v)?.as_str().ok() != Some(expected) {
@@ -195,7 +262,7 @@ pub(crate) fn identify_schema(conn: &Connection) -> Result<(), StoreError> {
     if rows.next().map_err(v)?.is_some() {
         return Err(StoreError::Integrity);
     }
-    Ok(())
+    Ok(schema)
 }
 
 fn usize_len(n: i64) -> Result<usize, StoreError> {
@@ -339,8 +406,12 @@ pub(crate) struct StoredHead {
 pub(crate) struct StoredState {
     pub(crate) receipts: Vec<u8>,
     pub(crate) head: StoredHead,
-    pub(crate) manifest: StoredManifest,
     pub(crate) replica: StoredReplica,
+    /// Every manifest row's hash, ascending: the live one and those the
+    /// snapshot index names (0004 §2.5).
+    pub(crate) manifests: Vec<[u8; 32]>,
+    /// The sealed snapshot index; `None` for [`Schema::V4`].
+    pub(crate) snapshot_index: Option<Vec<u8>>,
 }
 
 fn count(conn: &Connection, table: &str) -> Result<i64, StoreError> {
@@ -352,10 +423,20 @@ fn count(conn: &Connection, table: &str) -> Result<i64, StoreError> {
 /// value types and lengths; no value is read.
 fn check_singletons(conn: &Connection) -> Result<(), StoreError> {
     crate::receipt_store::check(conn)?;
-    for table in ["local_head", "manifest", "replica"] {
+    if file_schema(conn)? == Schema::V5 {
+        crate::snapshot_index::check(conn)?;
+    }
+    for table in ["local_head", "replica"] {
         if count(conn, table)? != 1 {
             return Err(StoreError::Integrity);
         }
+    }
+    let manifests = usize_len(count(conn, "manifest")?)?;
+    if manifests == 0 {
+        return Err(StoreError::Integrity);
+    }
+    if manifests > MAX_SNAPSHOTS + 1 {
+        return Err(StoreError::LimitExceeded);
     }
     let (id, body_type, body_len, mac_type, mac_len): (i64, String, i64, String, i64) = conn
         .query_row(
@@ -372,38 +453,38 @@ fn check_singletons(conn: &Connection) -> Result<(), StoreError> {
     {
         return Err(StoreError::Integrity);
     }
-    let m: (String, i64, String, String, String, i64, String, i64) = conn
-        .query_row(
+    let mut stmt = conn
+        .prepare(
             "SELECT typeof(manifest_hash), octet_length(manifest_hash), typeof(key_generation), \
              typeof(data_profile), typeof(nonce), octet_length(nonce), typeof(ciphertext), \
-             octet_length(ciphertext) FROM manifest",
-            [],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                ))
-            },
+             octet_length(ciphertext) FROM manifest LIMIT 258",
         )
         .map_err(v)?;
-    if m.0 != "blob"
-        || m.1 != 32
-        || m.2 != "integer"
-        || m.3 != "integer"
-        || m.4 != "blob"
-        || m.5 != 24
-        || m.6 != "blob"
-    {
-        return Err(StoreError::Integrity);
-    }
-    if usize_len(m.7)? > MAX_MANIFEST_CIPHERTEXT {
-        return Err(StoreError::LimitExceeded);
+    let mut rows = stmt.query([]).map_err(v)?;
+    while let Some(row) = rows.next().map_err(v)? {
+        let m: (String, i64, String, String, String, i64, String, i64) = (
+            row.get(0).map_err(v)?,
+            row.get(1).map_err(v)?,
+            row.get(2).map_err(v)?,
+            row.get(3).map_err(v)?,
+            row.get(4).map_err(v)?,
+            row.get(5).map_err(v)?,
+            row.get(6).map_err(v)?,
+            row.get(7).map_err(v)?,
+        );
+        if m.0 != "blob"
+            || m.1 != 32
+            || m.2 != "integer"
+            || m.3 != "integer"
+            || m.4 != "blob"
+            || m.5 != 24
+            || m.6 != "blob"
+        {
+            return Err(StoreError::Integrity);
+        }
+        if usize_len(m.7)? > MAX_MANIFEST_CIPHERTEXT {
+            return Err(StoreError::LimitExceeded);
+        }
     }
     let r: (i64, String, i64, String, i64, String, i64) = conn
         .query_row(
@@ -480,26 +561,62 @@ pub(crate) fn read_replica(conn: &Connection) -> Result<StoredReplica, StoreErro
     })
 }
 
-/// Reads the head, manifest and replica rows, shape-checked first.
+/// Reads the head and replica rows, every manifest hash and the snapshot
+/// index, shape-checked first. The manifests themselves are read by hash.
 pub(crate) fn read_state(conn: &Connection) -> Result<StoredState, StoreError> {
+    let schema = file_schema(conn)?;
     check_singletons(conn)?;
     Ok(StoredState {
         receipts: crate::receipt_store::read(conn)?,
         head: read_head(conn)?,
-        manifest: read_manifest(conn)?,
         replica: read_replica(conn)?,
+        manifests: manifest_hashes(conn)?,
+        snapshot_index: match schema {
+            Schema::V4 => None,
+            Schema::V5 => Some(crate::snapshot_index::read(conn)?),
+        },
     })
 }
 
-/// Reads the manifest row ([`check_singletons`] or [`read_rows`] first).
-pub(crate) fn read_manifest(conn: &Connection) -> Result<StoredManifest, StoreError> {
+/// The accepted schema of an already validated file.
+pub(crate) fn file_schema(conn: &Connection) -> Result<Schema, StoreError> {
+    match pragma_i64(conn, "user_version")? {
+        SCHEMA_VERSION => Ok(Schema::V5),
+        SCHEMA_V4 => Ok(Schema::V4),
+        _ => Err(StoreError::Unsupported),
+    }
+}
+
+/// Every manifest row's hash, ascending (after [`check_singletons`]).
+pub(crate) fn manifest_hashes(conn: &Connection) -> Result<Vec<[u8; 32]>, StoreError> {
+    let mut stmt = conn
+        .prepare("SELECT manifest_hash FROM manifest ORDER BY manifest_hash LIMIT 258")
+        .map_err(v)?;
+    let mut rows = stmt.query([]).map_err(v)?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().map_err(v)? {
+        out.push(array(row.get(0).map_err(v)?)?);
+    }
+    Ok(out)
+}
+
+/// Reads the manifest row with `hash` ([`check_singletons`] or
+/// [`read_rows`] first).
+pub(crate) fn read_manifest(
+    conn: &Connection,
+    hash: &[u8; 32],
+) -> Result<StoredManifest, StoreError> {
     let (hash, generation, profile, nonce, ciphertext): (Vec<u8>, i64, i64, Vec<u8>, Vec<u8>) =
         conn.query_row(
-            "SELECT manifest_hash, key_generation, data_profile, nonce, ciphertext FROM manifest",
-            [],
+            "SELECT manifest_hash, key_generation, data_profile, nonce, ciphertext FROM manifest \
+             WHERE manifest_hash = ?1",
+            [hash.as_slice()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
-        .map_err(v)?;
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => StoreError::Integrity,
+            e => v(e),
+        })?;
     if ciphertext.len() > MAX_MANIFEST_CIPHERTEXT {
         return Err(StoreError::LimitExceeded);
     }
@@ -660,7 +777,8 @@ pub(crate) mod tests {
         conn.execute_batch(
             "INSERT INTO local_head VALUES (1, x'a0', zeroblob(32));
              INSERT INTO manifest VALUES (zeroblob(32), 1, 1, zeroblob(24), x'00');
-             INSERT INTO replica VALUES (1, zeroblob(16), zeroblob(16), 1);",
+             INSERT INTO replica VALUES (1, zeroblob(16), zeroblob(16), 1);
+             INSERT INTO snapshot_index VALUES (1, x'00');",
         )
         .unwrap();
     }
@@ -717,7 +835,11 @@ pub(crate) mod tests {
         assert_eq!(sql, expected);
         let state = read_state(&conn).unwrap();
         assert_eq!(state.head.body, vec![0xa0]);
-        assert_eq!(state.manifest.ciphertext, vec![0x00]);
+        assert_eq!(state.manifests, vec![[0u8; 32]]);
+        assert_eq!(
+            read_manifest(&conn, &[0u8; 32]).unwrap().ciphertext,
+            vec![0x00]
+        );
         assert_eq!(state.replica.next_counter, 1);
     }
 
@@ -931,8 +1053,20 @@ pub(crate) mod tests {
             ),
             Some(StoreError::Integrity)
         );
+        // A second manifest row is a snapshot's (0004 §2.5): shape-checked
+        // here, matched against the snapshot index at unlock.
         assert_eq!(
             singleton("INSERT INTO manifest VALUES (randomblob(32), 1, 1, zeroblob(24), x'00')"),
+            None
+        );
+        assert_eq!(
+            singleton(
+                "PRAGMA ignore_check_constraints = ON; INSERT INTO manifest VALUES (randomblob(32), 1, 1, zeroblob(23), x'00')"
+            ),
+            Some(StoreError::Integrity)
+        );
+        assert_eq!(
+            singleton("DELETE FROM snapshot_index"),
             Some(StoreError::Integrity)
         );
         assert_eq!(

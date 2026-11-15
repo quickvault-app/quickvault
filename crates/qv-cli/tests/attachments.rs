@@ -102,7 +102,7 @@ fn attachment_cli_preflight_ambiguity_and_input_limits() {
         5
     );
     let file = std::fs::File::create(h.vaults().join("large")).unwrap();
-    file.set_len(10 * 1024 * 1024 + 1).unwrap();
+    file.set_len(qv_core::MAX_ATTACHMENT_BYTES + 1).unwrap();
     assert_eq!(run(&h, &["attach", "add", "Files", "large"]).code, 9);
     rustix::fs::mknodat(
         rustix::fs::CWD,

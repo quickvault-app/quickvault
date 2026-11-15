@@ -390,7 +390,8 @@ fn payload_attachment_sizes() {
     ok(1, 1);
     ok(CHUNK_SIZE, 1);
     ok(CHUNK_SIZE + 1, 2);
-    ok(MAX_ATTACHMENT_BYTES, 160);
+    let max_chunks = (MAX_ATTACHMENT_BYTES / CHUNK_SIZE) as usize;
+    ok(MAX_ATTACHMENT_BYTES, max_chunks as u32);
     let bad = |p: Vec<(i64, Vec<u8>)>, err: ModelError| {
         assert_eq!(
             decode(&envelope(3, false, Some(map(&p)))).map(|_| ()),
@@ -414,13 +415,13 @@ fn payload_attachment_sizes() {
         ModelError::Malformed,
     );
     // Over the client maximum.
-    let chunks: Vec<_> = (0..161).map(wide).collect();
+    let chunks: Vec<_> = (0..=max_chunks).map(|i| wide(i as _)).collect();
     bad(
         attachment_payload(MAX_ATTACHMENT_BYTES + 1, &chunks),
         ModelError::LimitExceeded,
     );
     bad(
-        attachment_payload(MAX_ATTACHMENT_BYTES + 1, &chunks[..160]),
+        attachment_payload(MAX_ATTACHMENT_BYTES + 1, &chunks[..max_chunks]),
         ModelError::LimitExceeded,
     );
     for k in 0..=6 {

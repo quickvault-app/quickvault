@@ -327,6 +327,18 @@ release, but no longer gates the feature.
   unmeasured image decodes use a size/dimension explanation and explicit Load
   image action rather than silently consuming a large allocation. Framework,
   kernel, media-engine and GPU copies retain 0008's best-effort limits.
+- **Large data** (owner, 2026-11-15; plan 0059). Large work warns rather than
+  failing early: attaching a file over 256 MiB asks for confirmation, naming
+  its size; a LAN sync or join that will receive over 256 MiB names the size
+  before receiving and shows progress while it does. The Linux viewer refuses
+  non-MP4 media over 256 MiB with a "save a copy" explanation (0003 §6.4).
+- **Snapshots** (plan 0059). Security settings list the vault's snapshots
+  (time, kind, the space each keeps) with restore to a new vault, and say that
+  snapshots live in the vault file, so an exported archive is the backup
+  against losing it. Emptying the trash, deleting an item permanently,
+  removing an attachment and purging history name how many snapshots contain
+  the data and remove them too unless "Keep in snapshots" is chosen (0007
+  §3.3).
 - **Android shell** (owner, 2026-11-07; plan 0044). The app's content stays
   clear of the status bar, display cutout, navigation bar and keyboard; the
   system bars use the theme's colours. Back does what Escape does (closes a
@@ -577,6 +589,9 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
 
 ## Changelog
 
+- 2026-11-15: §1.8: large-data warnings and the 256 MiB Linux media preview
+  bound; snapshot listing and the deletion choice for snapshots (owner
+  request, plan 0059).
 - 2026-11-15: §1.8 Inactivity: a playing audio or video preview counts as
   activity (owner bug report, plan 0058).
 - 2026-11-15: §1.8 Inactivity: an open system file picker lengthens the

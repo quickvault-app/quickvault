@@ -157,9 +157,9 @@ pub use session::{CancelToken, EntryHandle, FieldHandle, GroupHandle, ItemHandle
 pub use settings::{SettingsDraft, estimate, generate};
 pub use setup::{Core, CoreConfig, Created, Protection, SystemTime, TimeSource, VaultInfo, harden};
 pub use snapshot::{
-    DEFAULT_MAX_AGE_SECONDS, DEFAULT_MAX_BYTES, DEFAULT_MAX_COUNT, RecoverySnapshot,
-    SNAPSHOT_INTERVAL_SECONDS, SnapshotListing, SnapshotPolicy, SnapshotReport, SnapshotSkip,
-    SnapshotSummary, VerifyNote, VerifyReport,
+    DEFAULT_MAX_AGE_SECONDS, DEFAULT_MAX_BYTES, DEFAULT_MAX_COUNT, DeletionTarget,
+    RecoverySnapshot, SNAPSHOT_INTERVAL_SECONDS, SnapshotListing, SnapshotPolicy, SnapshotReport,
+    SnapshotSkip, SnapshotSummary, VerifyNote, VerifyReport,
 };
 pub use strength::{PasswordCheck, PasswordVerdict, confirmation_positions, password_strength};
 pub use views::{
@@ -177,8 +177,9 @@ pub use qv_crypto::{
     SecretBytes, Strength, WordListId,
 };
 pub use qv_model::{
-    Entry, Extensions, Field, FieldId, FieldKind, FieldValue, GeneratorDefaults, Group, RandomId,
-    SecretText, Settings, Text, Timestamp, TotpError, VaultMeta, VersionId, WriterId,
+    Entry, Extensions, Field, FieldId, FieldKind, FieldValue, GeneratorDefaults, Group,
+    MAX_ATTACHMENT_BYTES, RandomId, SecretText, Settings, Text, Timestamp, TotpError, VaultMeta,
+    VersionId, WriterId,
 };
 /// Creates owner-only directories (0700, or a private DACL on Windows).
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
@@ -209,7 +210,7 @@ pub use lan::{
     ApproverUi, EnrollmentCredential, JoinCode, JoinMode, JoinerUi, LanError, LanQrInfo,
     LanTimeouts, ListenScope, LocalAcceptance, PAIRING_WINDOW_MAX, Sas, Served, SyncOptions,
     SyncReport, SyncWindow, SyncWindowOptions, WindowCode, inspect_lan_qr, local_addresses,
-    parse_endpoint,
+    parse_endpoint, receive_progress,
 };
 #[cfg(all(test, any(target_os = "linux", target_os = "android", windows)))]
 mod lan_tests;

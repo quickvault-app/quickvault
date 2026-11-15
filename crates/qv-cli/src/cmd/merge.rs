@@ -13,15 +13,9 @@ pub(crate) fn run(ctx: &Ctx, args: &ArgMatches) -> Result<(), CliError> {
     let source = args
         .get_one::<std::path::PathBuf>("archive")
         .ok_or_else(|| CliError::usage("missing archive path"))?;
-    let over_budget = args.get_flag("allow-over-budget");
-    if over_budget {
-        crate::out::eprint(
-            "qv: the necessary recovery copy may exceed ordinary snapshot budgets\n",
-        );
-    }
     let session = ctx.unlock()?;
     let cancel = crate::signals::token();
-    let result = session.merge_archive(source, over_budget, Some(&cancel));
+    let result = session.merge_archive(source, Some(&cancel));
     session.lock();
     let report = result?;
     let mut out = Out::stdout();

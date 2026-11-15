@@ -126,25 +126,7 @@ pub struct VerifyCounts {
     pub total_bytes: u64,
 }
 
-/// What a local snapshot is for (0007 §3.2). A plain two-value type, because
-/// callers match on it on every target; producing one fails closed here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SnapshotKind {
-    /// An automatic or user-visible snapshot.
-    Ordinary,
-    /// The mandatory pre-operation copy of a destructive operation.
-    Recovery,
-}
-
-impl SnapshotKind {
-    /// The fixed label `ordinary` or `recovery` (0011 §4).
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Ordinary => "ordinary",
-            Self::Recovery => "recovery",
-        }
-    }
-}
+pub use crate::archive::SnapshotKind;
 
 macro_rules! never_debug {
     ($($t:ty),+) => {$(

@@ -125,6 +125,18 @@ pub(crate) struct State {
     pub(crate) writer: WriterId,
     /// The `lan_link` rows the head's `lan_links_digest` names, sorted by ID.
     pub(crate) links: Vec<crate::lan_store::StoredLink>,
+    /// The snapshot index the head names (0004 §2.5); `None` until a file of
+    /// the earlier schema is first written.
+    pub(crate) snapshots: Option<crate::snapshot_index::SnapshotIndex>,
+    /// What the last commit of this session did with snapshots.
+    pub(crate) last_snapshot: Option<crate::snapshot_commit::SnapshotOutcome>,
+    /// The snapshot every following commit keeps, until disarmed (see
+    /// [`UnlockedVault::arm_snapshot`]).
+    pub(crate) armed: Option<(
+        crate::SnapshotKind,
+        qv_model::Timestamp,
+        crate::SnapshotBudgets,
+    )>,
 }
 
 /// A vault whose password slot, header MAC, head, manifest and heads have
@@ -251,8 +263,28 @@ pub(crate) fn load_state_into<S: HeadSink>(
         return Err(StoreError::Integrity.into());
     }
 
+    // The snapshot index the head names, and exactly the manifest rows it
+    // and the head name (0004 §2.5).
+    let snapshots = match (&stored.snapshot_index, &head.snapshot_index_digest) {
+        (None, None) => None,
+        (Some(blob), Some(expected)) => {
+            Some(crate::snapshot_index::open(blob, expected, &keys, header)?)
+        }
+        _ => return Err(StoreError::Integrity.into()),
+    };
+    let mut named: Vec<[u8; 32]> = snapshots
+        .iter()
+        .flat_map(|i| i.rows().iter().map(|r| r.manifest_hash))
+        .chain([head.manifest_hash])
+        .collect();
+    named.sort_unstable();
+    named.dedup();
+    if named != stored.manifests {
+        return Err(StoreError::Integrity.into());
+    }
+
     // The manifest the head names.
-    let m = &stored.manifest;
+    let m = &schema::read_manifest(conn, &head.manifest_hash)?;
     if m.hash != head.manifest_hash || m.key_generation != header.key_generation {
         return Err(StoreError::Integrity.into());
     }
@@ -330,6 +362,9 @@ pub(crate) fn load_state_into<S: HeadSink>(
         replica: stored.replica,
         writer,
         links,
+        snapshots,
+        last_snapshot: None,
+        armed: None,
     })
 }
 
@@ -737,7 +772,9 @@ impl VaultFile {
     /// The vault format (the SQLite `user_version`), which `open` has
     /// already checked against the supported one.
     pub fn schema_version(&self) -> u32 {
-        u32::try_from(crate::schema::SCHEMA_VERSION).unwrap_or(u32::MAX)
+        crate::schema::file_schema(&self.conn).map_or(u32::MAX, |schema| {
+            u32::try_from(schema.version()).unwrap_or(u32::MAX)
+        })
     }
 
     /// The password slot's KDF profile, **unverified** (the slot is covered
@@ -985,6 +1022,7 @@ fn build(
             &replica_id,
         )?,
         lan_links_digest: crate::lan_store::empty_digest()?,
+        snapshot_index_digest: Some(crate::snapshot_index::initialize(&tx, &keys, &header)?),
     };
     let (stored_head, digest) = sign_head(&keys, &header, &head)?;
 
@@ -1462,7 +1500,7 @@ pub(crate) mod tests {
         let (p, dir) = copy_fixture(&d, &a, "v.qvault");
         let header = {
             let f = VaultFile::open(&p).unwrap();
-            assert_eq!(f.schema_version(), 0x7FFF_0004);
+            assert_eq!(f.schema_version(), 0x7FFF_0005);
             assert_eq!(f.password_kdf(), Ok(PasswordKdfProfile::V1));
             *f.header()
         };

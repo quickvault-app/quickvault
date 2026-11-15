@@ -22,8 +22,8 @@ pub(crate) use qv_core::platform::WindowsPick as Pick;
 #[cfg(all(feature = "desktop", target_os = "linux"))]
 pub(crate) use qv_core::platform::portal::Pick;
 
-/// Attachment bound shared with the CLI and model (10 MiB).
-pub const MAX_ATTACHMENT: u64 = 10 * 1024 * 1024;
+/// Attachment bound shared with the CLI and model (2 GiB).
+pub const MAX_ATTACHMENT: u64 = qv_core::MAX_ATTACHMENT_BYTES;
 
 #[cfg(any(target_os = "linux", windows))]
 fn file_error(e: qv_core::platform::PlatformError) -> AppError {
@@ -273,6 +273,23 @@ fn stage_document(_: u64, _: &CancelToken) -> Result<Staged, AppError> {
 }
 pub(crate) fn attachment_source(ws: &Workspace) -> Result<Source, AppError> {
     import_source(ws)
+}
+/// Attachments above this ask before they are added (plan 0059, 0009 §1.8).
+pub(crate) const LARGE_ATTACHMENT: u64 = 256 * 1024 * 1024;
+/// The chosen attachment input's size, for the large-file warning only: the
+/// file's metadata, or the Android provider's report. Unauthenticated and
+/// best effort; reading is bounded on its own.
+pub(crate) fn attachment_size(ws: &Workspace) -> Option<u64> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = ws;
+        crate::android::picked_size()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let path = absolute(ws).ok()?;
+        std::fs::metadata(path).ok().map(|m| m.len())
+    }
 }
 #[cfg(target_os = "android")]
 pub(crate) fn attachment_target(ws: &Workspace) -> Result<Target, AppError> {

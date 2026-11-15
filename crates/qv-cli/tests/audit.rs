@@ -343,12 +343,11 @@ fn audit_write_failure_fails_closed_at_every_write_path() {
     }
     let before = evidence(&h);
 
-    // Automatic snapshot (best effort): the unlock succeeds, the copy is not
-    // written and no partial archive is left.
+    // A read writes nothing, so it succeeds under the limit and leaves no
+    // snapshot file (plan 0059: snapshots are kept inside commits).
     let o = run_as(&h, |c| limited(c, 1024), PASSWORD, &["ls"]);
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert!(o.stdout.contains("Keep"), "{}", o.stdout);
-    assert!(o.stderr.to_lowercase().contains("snapshot"), "{}", o.stderr);
     if h.snapshots().exists() {
         assert!(
             files(&h.snapshots()).is_empty(),
@@ -358,7 +357,6 @@ fn audit_write_failure_fails_closed_at_every_write_path() {
     }
     assert_eq!(evidence(&h), before);
 
-    // One normal run takes today's copy, so later runs skip it.
     assert_eq!(run_as(&h, |c| c, PASSWORD, &["ls"]).code, 0);
     let size = std::fs::metadata(h.vault()).unwrap().len();
     let before = evidence(&h);
@@ -390,8 +388,9 @@ fn audit_write_failure_fails_closed_at_every_write_path() {
     assert_eq!(evidence(&h), before);
     no_partial_files(&h);
 
-    // The mandatory recovery copy of `trash empty` (0012 "Snapshot disk
-    // growth", offline part): no copy, no deletion.
+    // `trash empty` takes no recovery copy (plan 0059); a deletion commit
+    // that cannot be written deletes nothing (0012 "Snapshot disk growth",
+    // offline part).
     {
         let s = h.unlock();
         let e = s.list(s.root().unwrap()).unwrap().entries[0].handle;
@@ -502,7 +501,7 @@ fn audit_canary_secrets_never_reach_output_or_files() {
     std::fs::set_permissions(&corrupt, std::fs::Permissions::from_mode(0o600)).unwrap();
     std::fs::File::create(h.root.join("large.bin"))
         .unwrap()
-        .set_len(10 * 1024 * 1024 + 1)
+        .set_len(qv_core::MAX_ATTACHMENT_BYTES + 1)
         .unwrap();
     let restored = arg(&h.vaults().join("restored.qvault"));
 

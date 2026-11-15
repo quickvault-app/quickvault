@@ -257,7 +257,7 @@ pub(crate) fn identify_existing(path: &Path) -> Result<(), StoreError> {
     )
     .map_err(|e| sqlite_err(&e))?;
     harden_reads(&mut conn, &StepBudget::new())?;
-    crate::schema::identify_schema(&conn)
+    crate::schema::identify_schema(&conn).map(|_| ())
 }
 
 #[cfg(test)]
@@ -410,7 +410,7 @@ mod tests {
         let pages: i64 = conn
             .pragma_query_value(None, "max_page_count", |r| r.get(0))
             .unwrap();
-        assert_eq!(pages, 524_288);
+        assert_eq!(pages, 4_194_304);
     }
 
     #[test]

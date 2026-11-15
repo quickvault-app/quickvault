@@ -203,10 +203,7 @@ fn conflict_all_kinds_resolve_complete_versions_and_keep_unseen_edits() {
         .collect();
     let dir = TestDir::new();
     let incoming = export(&remote, &dir);
-    assert_eq!(
-        s.merge_archive(&incoming, false, None).unwrap().conflicts,
-        5
-    );
+    assert_eq!(s.merge_archive(&incoming, None).unwrap().conflicts, 5);
     assert_eq!(s.conflict_records().unwrap().len(), 5);
     let h = handle(&s, id, remote_heads[0].1);
     let view = s.conflict_version(&h).unwrap();
@@ -234,7 +231,7 @@ fn conflict_all_kinds_resolve_complete_versions_and_keep_unseen_edits() {
             s.resolve_version(&h, Some(&pw("remote changed password")), None)
                 .unwrap();
         } else {
-            crate::testutil::destructive(&s, || s.resolve_version(&h, None, None)).unwrap();
+            s.resolve_version(&h, None, None).unwrap();
         }
         assert_eq!(s.overview().unwrap().local_seq, before + 1);
         assert_eq!(err(s.conflict_version(&h)), CoreError::StaleHandle);
@@ -305,7 +302,7 @@ fn conflict_all_kinds_resolve_complete_versions_and_keep_unseen_edits() {
     let unseen_file = export(&unseen, &dir);
     assert_eq!(
         reopened
-            .merge_archive(&unseen_file, false, None)
+            .merge_archive(&unseen_file, None)
             .unwrap()
             .conflicts,
         1
@@ -327,7 +324,7 @@ fn conflict_final_entry_refuses_other_conflicts_and_finalizes_unseen_owned_attac
         }
         let remote = branch(&env, &s, "remote");
         s.delete(ItemHandle::Entry(entry), false).unwrap();
-        crate::testutil::destructive(&s, || s.purge(&[ItemHandle::Entry(entry)])).unwrap();
+        s.purge(&[ItemHandle::Entry(entry)], false).unwrap();
         edit(&remote, id, |v| {
             if let RecordBody::Live(Payload::Entry(e)) = &mut v.body {
                 e.title = Text::new("concurrent edit").unwrap();
@@ -362,8 +359,7 @@ fn conflict_final_entry_refuses_other_conflicts_and_finalizes_unseen_owned_attac
                 .unwrap();
         }
         let dir = TestDir::new();
-        s.merge_archive(&export(&remote, &dir), false, None)
-            .unwrap();
+        s.merge_archive(&export(&remote, &dir), None).unwrap();
         let record = s.conflict_matches(&entry.id_hex()).unwrap()[0];
         let final_head = s
             .conflict_versions(record)
@@ -388,10 +384,10 @@ fn conflict_final_entry_refuses_other_conflicts_and_finalizes_unseen_owned_attac
                 .into_iter()
                 .find(|h| s.conflict_version(h).unwrap().state == Deletion::Final)
                 .unwrap();
-            crate::testutil::destructive(&s, || s.resolve_version(&h, None, None)).unwrap();
+            s.resolve_version(&h, None, None).unwrap();
         }
         assert_eq!(
-            crate::testutil::destructive(&s, || s.resolve_version(&final_head, None, None))
+            s.resolve_version(&final_head, None, None)
                 .unwrap()
                 .conflicts,
             0
@@ -429,7 +425,7 @@ fn conflict_slotless_snapshot_restores_working_slot_without_resolving_heads() {
     }
     let dir = TestDir::new();
     assert_eq!(
-        s.merge_archive(&export(&remote, &dir), false, None)
+        s.merge_archive(&export(&remote, &dir), None)
             .unwrap()
             .conflicts,
         1
@@ -446,12 +442,13 @@ fn conflict_slotless_snapshot_restores_working_slot_without_resolving_heads() {
         .unwrap();
     assert_eq!(restored.overview().unwrap().conflicts, 1);
     assert!(restored.verify(None).unwrap().ok());
+    // The merge kept its pre-merge state inside the vault (plan 0059); the
+    // finished file copy is ordinary.
+    let rows = s.snapshots().unwrap().snapshots;
+    assert!(rows.iter().any(|r| r.kind == SnapshotKind::Recovery));
     assert!(
-        s.snapshots()
-            .unwrap()
-            .snapshots
-            .iter()
-            .all(|r| r.kind == SnapshotKind::Ordinary)
+        rows.iter()
+            .any(|r| r.archive_id == snapshot && r.kind == SnapshotKind::Ordinary)
     );
 }
 
@@ -534,9 +531,9 @@ fn conflict_additional_head_invalidates_inspected_choice_even_when_selected_stay
         });
     }
     let d = TestDir::new();
-    s.merge_archive(&export(&r1, &d), false, None).unwrap();
+    s.merge_archive(&export(&r1, &d), None).unwrap();
     let h = handle(&s, id, head(&r1, id));
-    s.merge_archive(&export(&r2, &d), false, None).unwrap();
+    s.merge_archive(&export(&r2, &d), None).unwrap();
     let seq = s.overview().unwrap().local_seq;
     assert_eq!(
         err(s.resolve_version(&h, None, None)),
@@ -569,10 +566,7 @@ fn unlock_builds_the_index_from_verification_and_rereads_only_conflicts() {
     }
     let dir = TestDir::new();
     let incoming = export(&remote, &dir);
-    assert_eq!(
-        s.merge_archive(&incoming, false, None).unwrap().conflicts,
-        1
-    );
+    assert_eq!(s.merge_archive(&incoming, None).unwrap().conflicts, 1);
     s.lock();
     crate::index::READS.with(|n| n.set(0));
     let s = env.unlock();

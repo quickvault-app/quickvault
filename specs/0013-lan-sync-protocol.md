@@ -401,12 +401,12 @@ objects it does not hold with an identical reference
 - A local object with the same ID but a different reference is an
   integrity error. The round aborts with `integrity`, and the user sees
   substitution evidence.
-- Totals stay within 250,000 objects and 2 GiB of staging (0004 §4.1,
-  §4.3).
+- Totals stay within 250,000 objects plus 131,072 attachment chunks and
+  16 GiB of staging (0004 §4.1, §4.3; plan 0059).
 - The sender refuses an ID that is not in the manifest it sent
   (`protocol`).
-- An empty `Want` must have `last = true`, and a side sends at most 62
-  `Want` messages per turn (⌈250,000 / 4,096⌉). Anything else is
+- An empty `Want` must have `last = true`, and a side sends at most 94
+  `Want` messages per turn (⌈381,072 / 4,096⌉). Anything else is
   `protocol`.
 
 7.5. **Object.** `["qv/lan-object/v1", envelope: bstr]`. Objects arrive in
@@ -965,6 +965,7 @@ Release evidence for the 0012 §3 LAN gate and the 0012 §1 LAN rows:
 
 ## Changelog
 
+- 2026-11-15: §7.4 totals follow 0004's larger budgets: chunks counted apart (131,072), 16 GiB staging, 94 `Want` messages (owner request, plan 0059).
 - 2026-11-09: Reconcile current testing rows with §15 key proofs and v2 vectors; legacy byte descriptions remain historical.
 
 - 2026-11-09: Correct §15.2's QR element count to five, matching the explicitly listed §4.2 fields; no QR field is added or removed.

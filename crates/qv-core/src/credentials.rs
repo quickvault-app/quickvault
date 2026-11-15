@@ -30,6 +30,9 @@ impl Session {
             commit_with(
                 ctx,
                 |write| {
+                    // The change keeps no snapshot of the pre-change state: the
+                    // frontend offers to delete the pre-change ones (0007 §3.5).
+                    write.keep_no_snapshot();
                     let slot = write.stage_password(
                         password,
                         PasswordKdfProfile::V1,

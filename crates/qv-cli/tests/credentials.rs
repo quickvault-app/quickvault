@@ -18,9 +18,11 @@ fn create(h: &Home) -> RecoveryPhrase {
     created.session.lock();
     created.recovery_phrase
 }
+/// A change made with the CLI's snapshot policy keeps a snapshot of the state
+/// before it inside the vault (plan 0059).
 fn snapshot(h: &Home) {
     let o = piped(
-        h.qv(["--password-stdin", "-v", &arg(&h.vault()), "snapshot", "ls"]),
+        h.qv(["--password-stdin", "-v", &arg(&h.vault()), "mkdir", "Kept"]),
         format!("{PASSWORD}\n").as_bytes(),
     );
     assert_eq!(o.code, 0, "{}", o.stderr);
@@ -87,6 +89,7 @@ fn credentials_recovery_show_is_alternate_screen_and_reauthenticates() {
 fn credentials_recover_missing_anchor_requires_consent_and_offers_snapshot_deletion() {
     let h = Home::new();
     let phrase = create(&h);
+    snapshot(&h);
     for e in std::fs::read_dir(h.anchors()).unwrap() {
         std::fs::remove_file(e.unwrap().path()).unwrap();
     }
@@ -162,6 +165,7 @@ fn credentials_preflight_refuses_json_stdin_and_nonterminal_displays() {
 fn credentials_weak_password_delay_is_not_skipped_by_yes() {
     let h = Home::new();
     let _phrase = create(&h);
+    snapshot(&h);
     let mut p = Interactive::spawn(h.qv(["--yes", "-v", &arg(&h.vault()), "passwd"]));
     p.expect("Master password: ");
     p.line(PASSWORD);

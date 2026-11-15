@@ -547,7 +547,7 @@ fn lan_core_conflicted_keyslot_refuses_a_new_device() {
     let out = TestDir::new();
     let exported = o.export_archive(out.path(), false, None).unwrap();
     let archive = out.path().join(format!("{}.qvsnap", exported.archive_id));
-    let merged = a.merge_archive(&archive, true, None).unwrap();
+    let merged = a.merge_archive(&archive, None).unwrap();
     assert!(merged.accepted);
     let b_env = Env::empty(TestDir::new());
     let dest = b_env.dir.path().join("joined.qvault");
@@ -580,13 +580,19 @@ fn lan_core_merges_take_an_ordinary_snapshot_at_most_once_per_interval() {
     crate::testutil::add_entry(&b, b.root().unwrap(), "one");
     let (_, sent) = round(&b, &a);
     assert_eq!(sent.unwrap().local, LocalAcceptance::Committed);
-    // The unlock's snapshot is recent: the merge does not add another.
-    assert_eq!(count(), before);
+    // The merge commit keeps at most one per interval (plan 0059: inside
+    // the commit, so only a merge that changes the vault keeps one).
+    let first = count();
+    assert!(first <= before + 1);
+    crate::testutil::add_entry(&b, b.root().unwrap(), "one more");
+    let (_, sent) = round(&b, &a);
+    assert_eq!(sent.unwrap().local, LocalAcceptance::Committed);
+    assert_eq!(count(), first);
     env.time.set(env.time.now().0 + 2 * 60 * 60 * 1000);
     crate::testutil::add_entry(&b, b.root().unwrap(), "two");
     let (_, sent) = round(&b, &a);
     assert_eq!(sent.unwrap().local, LocalAcceptance::Committed);
-    assert_eq!(count(), before + 1);
+    assert_eq!(count(), first + 1);
 }
 
 // 0012 §1: Account-dependent LAN sync

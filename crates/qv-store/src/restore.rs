@@ -359,6 +359,7 @@ fn build<R: Read + Seek>(
                     &replica.replica_id,
                 )?,
                 lan_links_digest: crate::lan_store::empty_digest()?,
+                snapshot_index_digest: Some(crate::snapshot_index::initialize(tx, &keys, header)?),
             };
             let (head, _) = sign_head(&keys, header, &head)?;
             Ok(creation::Filled { manifest, head })

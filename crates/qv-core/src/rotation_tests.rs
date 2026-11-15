@@ -145,13 +145,21 @@ fn rotate_full_lifecycle_through_core() {
         "{refused:?}"
     );
     assert!(!target.exists());
+    // The snapshots inside the old file are gone with it (a new file
+    // carries none, plan 0059); the rotation's own recovery copy remains a
+    // file of the old generation.
     for id in &old_ids {
         assert!(
-            files(&env.dir.path().join("snapshots"))
+            !files(&env.dir.path().join("snapshots"))
                 .iter()
                 .any(|f| f.contains(id.as_str()))
         );
     }
+    assert!(
+        files(&env.dir.path().join("snapshots"))
+            .iter()
+            .any(|f| f.ends_with(".qvsnap"))
+    );
 }
 
 #[test]
@@ -336,14 +344,16 @@ fn rotate_resume_without_a_snapshot_policy_is_not_allowed() {
 
 // ---- Step 5: inventory-aware policy ------------------------------------
 
-/// Rotates a vault that has `n` ordinary generation-1 snapshots two hours
-/// apart (plus the rotation's recovery copy). Returns the ordinary IDs.
+/// Rotates a vault that has `n` ordinary generation-1 snapshot files two
+/// hours apart (plus the rotation's recovery copy). Returns the ordinary IDs.
 fn rotated_with_old_copies(env: &Env, n: usize) -> Vec<String> {
     let start = env.time.0.load(std::sync::atomic::Ordering::SeqCst);
     let core = env.core_with(Some(wide(env)));
     for i in 0..n {
         env.time.set(start + (i as i64) * 2 * HOUR);
-        drop(unlock(&core, env, PASSWORD).unwrap());
+        let s = unlock(&core, env, PASSWORD).unwrap();
+        let copy = s.begin_destructive(false, None).unwrap();
+        s.finish_destructive(copy).unwrap();
     }
     let s = unlock(&core, env, PASSWORD).unwrap();
     let old: Vec<String> = s
@@ -369,18 +379,18 @@ fn old_present(env: &Env, ids: &[String]) -> usize {
 fn snapshot_inventory_policy_counts_and_prunes_old_generations() {
     let env = Env::new();
     let old = rotated_with_old_copies(&env, 3);
-    // Count budget 3: the new copy plus the two newest old copies (the
-    // recovery copy is the newest old one); the two oldest go.
+    // Count budget 3: the three newest old files stay (the recovery copy is
+    // the newest); the oldest goes. No new file is written (plan 0059).
     let core = env.core_with(Some(policy(&env, 3, 512 * 1024 * 1024, 30 * 24 * 60 * 60)));
     env.time
         .set(env.time.0.load(std::sync::atomic::Ordering::SeqCst) + 3 * HOUR);
     let s = unlock(&core, &env, NEW).unwrap();
     let report = s.snapshot_status().unwrap();
-    assert!(report.published.is_some(), "{report:?}");
+    assert!(report.published.is_none(), "{report:?}");
     assert!(!report.failed, "{report:?}");
-    assert_eq!(report.pruned.len(), 2, "{report:?}");
+    assert_eq!(report.pruned.len(), 1, "{report:?}");
     assert!(report.pruned.iter().all(|id| old.contains(id)));
-    assert_eq!(old_present(&env, &old), 1);
+    assert_eq!(old_present(&env, &old), 2);
     drop(s);
 
     // Age: everything older than an hour goes, old generations included.

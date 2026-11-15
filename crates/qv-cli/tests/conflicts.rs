@@ -80,6 +80,10 @@ fn conflicts_cli_all_kinds_masking_selection_and_selected_slot_password_proof() 
         .unwrap();
     let aid = a.id_hex();
     s.lock();
+    // The first change made with the CLI's snapshot policy keeps this exact
+    // state inside the vault (plan 0059: the state before its commit).
+    let made = run(&h, &["mkdir", "Extra"]);
+    assert_eq!(made.code, 0, "{}", made.stderr);
     let listing = run(&h, &["snapshot", "ls"]);
     assert_eq!(listing.code, 0, "{}", listing.stderr);
     let snapshot = &listing.stdout.lines().next().unwrap()[..32];
@@ -94,7 +98,7 @@ fn conflicts_cli_all_kinds_masking_selection_and_selected_slot_password_proof() 
     let le = entry(&local);
     let re = entry(&remote);
     local
-        .remove_attachment(local.attachments(le).unwrap()[0].handle)
+        .remove_attachment(local.attachments(le).unwrap()[0].handle, false)
         .unwrap();
     let rh = remote
         .conflict_versions(remote.conflict_matches(&aid).unwrap()[0])

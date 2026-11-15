@@ -74,61 +74,67 @@ snapshots, rotation, manifests and the resource budget.
 
 ### 3. Local snapshots
 
-3.1. Snapshots are archives (0004 §6) written from verified local objects.
-They never contain device-local quick slots, signing keys, session tokens,
-sync state or external anchors. By default a local snapshot carries **no
-password slot** (0004 §6.4; roadmap 0002 decision D6): it opens only with the
-vault key of the same vault ID and key generation — i.e. from the active
-vault that wrote it, or any other replica holding that key — or with the
-recovery phrase. An archive that gives a file-sync provider, a backup thief
-or a copy on a shared medium nothing to attack offline MUST NOT be weakened
-for convenience: no slot is added unless the user explicitly chooses a
-self-contained archive (0004 §6.4). Store snapshots in a private application
-directory, outside exchange directories.
+3.1. A local snapshot is a past manifest the vault keeps, together with the
+objects it references (0004 §2.5, plan 0059): it shares every object the vault
+still holds, so it costs only its manifest and what the vault has since
+dropped. It never contains device-local quick slots, signing keys, session
+tokens, sync state or external anchors. It is restored, exported or inspected
+only through the vault that holds it, with that vault's key. Restoring writes
+an ordinary slotless archive (0004 §6) of the snapshot to a private temporary
+file beside the new path and restores that; the temporary file is removed.
+Exported archives remain the backup against losing or corrupting the vault
+file; frontends say so where snapshots are listed. No slot is added to any
+archive unless the user explicitly chooses a self-contained export (0004
+§6.4).
 
-3.2. Take a recovery snapshot before explicit file imports, whole-state recovery,
-profile/generation migrations and bulk deletion; at most one ordinary snapshot
-per hour plus one on first unlock each day. Normal LAN and server causal merges
-use ordinary snapshot coalescing, not a full mandatory copy on every poll. Local
-edits between snapshots still have record history. Mandatory pre-operation
-recovery snapshots may bypass the hourly interval. Only one serialized recovery
-operation may pin a snapshot; after confirmed completion its copy becomes an
-ordinary snapshot subject to count/byte pruning.
+The VK rotation (0002 §3.5), like any profile or generation migration that
+builds a new file, still writes its recovery copy as a slotless
+archive in the private snapshot directory and inventories it across the
+generation change, because it builds a new file that carries no snapshots.
+Snapshot files written before plan 0059 stay listable and restorable and are
+pruned by age and count until none remain; no new ordinary file is written.
+
+3.2. **When snapshots are taken.** Snapshots are taken inside commits, never by
+a read: when a commit is about to change the vault and the newest snapshot is
+more than an hour old, or none is from the current UTC day, the commit first
+retains the pre-commit manifest as an ordinary snapshot. A commit that leaves
+the vault as the newest snapshot has it takes none. LAN and archive merges
+commit through the same rule.
+
+Take a recovery snapshot of the pre-operation state, in the same transaction,
+before an archive import into an existing vault, baseline adoption and a
+conflict resolution that installs a final deletion: automatic merges where the
+user did not choose what disappears. A recovery snapshot is pruned like an
+ordinary one once its operation has committed; its kind remains a label.
+Explicit deletions (final deletion, emptying the trash, removing an
+attachment, history purge) take no recovery copy (owner, 2026-11-15): the
+trash is their safety net, and they commit atomically.
+
+Core enforces these rules. A snapshot of an operation is only ever the exact
+pre-operation manifest; frontends cannot skip, substitute or postpone it, and
+it needs no separate consent because it never copies the vault.
 
 An import into an existing vault requires that recovery snapshot. Explicit
 creation of an independent new path under 0004 §5.4 changes neither the selected
 document nor an existing local vault: fully verified leased staging and the
 no-replace restore protocol protect publication. It requires explicit new-baseline
-acknowledgement (§3.4), without taking a destructive-operation snapshot of an
-unmodified local vault.
+acknowledgement (§3.4), without taking a snapshot of an unmodified local vault.
 
-Core enforces this recovery policy for final deletion, history purge, baseline
-adoption and final-tombstone conflict resolution as well as existing import/
-restore/migration paths. A completed recovery-copy authorization is private,
-bound to its session, exact pre-mutation sequence/manifest and key generation,
-and invalid after a durable mutation or any intervening head change. Verify
-the copy under the current vault key before destroying data; a stale/foreign
-handle or missing copy never authorizes a mutation. Disabled snapshots produce
-NotAllowed, not an internal error. Baseline adoption requires a read-only
-recovery session, never an ordinary writable session. Frontends may obtain the
-copy with explicit over-budget consent, but cannot bypass enforcement.
+3.3. Defaults are 30 days, at most 48 snapshots and 1 GiB of snapshot-only data
+per vault: retained manifests other than the live one, plus objects only
+snapshots reference. Prune the oldest snapshots first, in the commit that
+takes a new one, until the count, age and byte budgets fit; a snapshot taken by
+the current operation is never pruned by it. Configurable larger budgets
+require explicit user choice. When the snapshot that a commit must take cannot
+fit even alone, the commit proceeds and reports that the snapshot was skipped
+for space; a recovery snapshot is always kept.
 
-Hold a cooperative cross-process file lease from recovery-copy production until
-its pin is released. Creation/cleanup uses the same short directory lock across
-file creation and lease acquisition, so no live file is observable as unleased.
-Policy passes skip leased copies, including another process's recovery pin;
-SIGKILL releases leases without an age-based guess. After completion, a
-verified already-ordinary copy is an idempotent reclassification success.
-Do not suppress real integrity or I/O errors, or turn a durable mutation into
-an unchanged/cancelled result because completion metadata raced.
-
-3.3. Defaults are 30 days, at most 48 ordinary snapshots and a 512 MiB aggregate
-budget per vault. Prune oldest ordinary snapshots to fit count/bytes; configurable
-larger budgets require explicit user choice. Never silently delete a recovery
-snapshot protecting an in-progress operation. If the new snapshot cannot fit,
-abort that destructive operation and report required space; do not continue
-without its recovery copy. One necessary recovery copy may exceed the ordinary
-budget with explicit user approval or a user-selected alternate location.
+**Permanent deletion and snapshots (owner, 2026-11-15).** Final deletion and
+history purge also remove every snapshot that contains the deleted versions,
+unless the user explicitly keeps them; frontends say how many snapshots
+contain them before asking. Keeping them leaves the data recoverable until
+those snapshots are pruned. Neither choice is secure erasure (Security
+Considerations).
 
 3.4. Restore writes a new path, preserving the active vault and its external
 anchor. Opening a restored copy is an explicit recovery baseline, and subsequent
@@ -198,6 +204,12 @@ reference set. Purge acknowledgements must not imply independent copies vanished
    explicit, warned user choice (0004 §6.4).*
 
 ## Changelog
+
+- 2026-11-15: §2.2, §3.1–3.3: snapshots live inside the vault and share its
+  objects; they are taken inside commits; explicit deletions take no recovery
+  copy; permanent deletion removes the snapshots that contain the deleted data
+  unless the user keeps them; budgets 48 / 30 days / 1 GiB snapshot-only
+  (owner request, plan 0059; details delegated).
 
 - 2026-11-11: §3.2 distinguishes Android independent new-path import from an
   import that mutates an existing vault; source/local files remain intact (0049).

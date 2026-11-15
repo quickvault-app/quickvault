@@ -88,10 +88,10 @@ rather than creating unused workspace scaffolding.
 | qv-encoding | Bounded deterministic CBOR (0004 §3.1): validates hostile input before typed reads, encodes only canonical items, builds AAD/info/transcript arrays; depends on no other qv crate |
 | qv-crypto | Profiles, key hierarchy, encryption, protected memory, X-Wing draft-11 (libcrux-kem), typed LAN record epochs and one-use code keys, ephemeral password authentication, independent VK proofs, final-key confirmation and comparison codes (0013 §15); hybrid signature verification from roadmap 4.3 |
 | qv-model | Canonical payloads, atomic records, compact authenticated-head summaries and deterministic tree projection |
-| qv-store | Hardened SQLite with non-mutating identification, immutable objects, manifests, durable-outcome reporting, cooperative inode/directory leases for temporary files and snapshots (on Windows: ACL owner-only rules, reparse-point refusal, file-ID identity, byte-range process locks, named-mutex directory locks and write-through renames, plan 0052), authenticated archives (header, writer, role-verifying reader), new-path restore and the full `verify` pass; no LAN peer state (the retired `lan_link` rows stay head-bound and clear at the next commit; 0013 §9.1), LAN serving reads, peer staging (new device, or merge with local copies of held objects) and receipt-free LAN acceptance through the archive acceptance transaction (0013 §7, §9–10) |
+| qv-store | Hardened SQLite with non-mutating identification, immutable objects, manifests, local snapshots inside the vault (a sealed head-bound index of kept manifests and retained objects, plan 0059), durable-outcome reporting, cooperative inode/directory leases for temporary files and snapshots (on Windows: ACL owner-only rules, reparse-point refusal, file-ID identity, byte-range process locks, named-mutex directory locks and write-through renames, plan 0052), authenticated archives (header, writer, role-verifying reader), new-path restore and the full `verify` pass; no LAN peer state (the retired `lan_link` rows stay head-bound and clear at the next commit; 0013 §9.1), LAN serving reads, peer staging (new device, or merge with local copies of held objects) and receipt-free LAN acceptance through the archive acceptance transaction (0013 §7, §9–10) |
 | qv-protocol | Key-free hostile-input wire layer: bounded LAN frames, wire labels with exact arity, exact-shape message reader/writer, `lan / 2` profile, feature and error-code registry (roadmap 2.8); typed pairing/exchange/error messages, the one-use code's QR/manual form and endpoint text (roadmap 2.9–2.10, plan 0042); server wire types later; depends only on qv-encoding |
 | qv-sync | Shared causal merge candidates; LAN over TCP: the one-use sync window and the joiner in sync or new-device mode, and the two-way exchange (roadmap 2.9–2.10, plan 0042); remote candidate state and publication orchestration (planned) |
-| qv-core | Session policy, handles, lock cancellation, mutation authorization including verified pre-state recovery copies, snapshot policy/budgets, the `verify` report, and LAN sync windows, sync from a code and new-device join for frontends; strict scanned QR kind/profile/address inspection without network I/O; opaque staged/authenticated vault-import capabilities with complete pre-publication index validation and fresh-local creation |
+| qv-core | Session policy, handles, lock cancellation, mutation authorization, snapshot policy/budgets (snapshots kept inside commits; the rotation's recovery file), the `verify` report, and LAN sync windows, sync from a code and new-device join for frontends; strict scanned QR kind/profile/address inspection without network I/O; opaque staged/authenticated vault-import capabilities with complete pre-publication index validation and fresh-local creation |
 | qv-platform | Injected OS traits; local unicast addresses for LAN endpoints from route probes, attached networks first (`/proc/net/route` where readable; std only); Windows WTS lock/sleep lifecycle (required), Win32 clipboard with history/cloud exclusion, native open/save/folder dialogs, the instance lock and ACL-checked explicit file input/output, with unknown persistence evidence and no quick unlock (plan 0052); Linux logind lifecycle, xdg-desktop-portal file picker (zbus, local `file:` results only), session clipboard ownership (Wayland data-control with an own bounded wire client, else X11) and, for the desktop app on Wayland, GTK clipboard ownership behind the optional `gtk` feature (plan 0055), single-instance and persistence reporting, no-follow explicit file input/output shared by CLI and app; Android lifecycle metadata and clipboard hold policy over an injected native backend; Android keystore quick unlock with boot-bound policy state that survives app restarts (on where the device supports it; plan 0045); Android storage evidence from the OS encryption status; exact-identity autofill matching; native input unavailable |
 | qv-cli / qv-app | Explicit user actions and views, including `qv lan open|sync|join` and the app's Sync screen and Join mode; qv-app's shared UI (own title bar, one DOM for desktop and phone, 0009 §1.8), its non-secret preferences file (theme, acknowledged protection status), QR rendering/decoding and bounded native Android Camera2 glue (camera on by default; `QV_APP_QR_CAMERA=0` builds without it); in-app attachment previews verified and streamed in protected chunks through a revocable `/preview/` capability on the existing bounded loopback listener (0003 §6.4); on Linux, portal file picks run in a re-executed helper process without vault data, since the portal refuses the non-dumpable app; no unrestricted crypto/file/SQL bridge |
 | qv-win | Windows-only Win32 bindings on `windows-sys`: the only crate allowed `unsafe`, confined to its FFI modules with a `// SAFETY:` note per block (enforced by Clippy). Safe wrappers for security descriptors (pure Rust SID/ACL parsing and the 0009 §5.1 rules, tested everywhere), no-follow opens, file identity, byte-range locks, write-through renames, POSIX deletion, private creation, named mutexes, the session watcher, the clipboard, console input/output and file dialogs (plan 0052); depends on no other qv crate |
@@ -238,7 +238,8 @@ data object envelopes. Core exposes current-password reauthentication for phrase
 redisplay and phrase-based unlock of an existing local vault. CLI `passwd`,
 `recovery show` and `recover <path>` use protected terminal input; redisplay uses
 the alternate screen. A missing/mismatched anchor requires explicit recovery
-baseline consent and a verified recovery snapshot before adoption. Password
+baseline consent before adoption (the adoption commit changes no stored object,
+so it keeps no snapshot; plan 0059). Password
 replacement offers deletion of the named pre-change local snapshots only after
 separate confirmation. Old slots, retained copies and independent snapshots
 remain capable of disclosing the same VK; deletion is not cryptographic erasure.
@@ -278,17 +279,25 @@ resumed flow. The owner-approved
 0002 amendment defers offline-only recovery public-key derivation until sync
 uses the identities; the independent seeds still change with the new VK.
 
-Local snapshots (0007 §3) are archives built only from verified objects: the
-live SQLite file is never copied or normalized, and no password slot is
-written. On unlock, core may take one ordinary snapshot per hour and one on the
-first unlock of a UTC day, deciding from authenticated archive headers in the
-private snapshot directory only — no marker row, settings row or vault commit
-on a read command. Budgets are 30 days, 48 ordinary snapshots and 512 MiB,
-pruned oldest first; a recovery copy pinned by an in-progress destructive
-operation is never pruned, and a `recover-` file left by a crash is reclassified
-before pruning. `trash empty` writes and verifies a recovery copy before its
-purge commits: a copy that cannot be written aborts the deletion with nothing
-purged, and exceeding the ordinary budget requires explicit approval.
+Local snapshots (0007 §3, 0004 §2.5; plan 0059) live inside the vault file: a
+snapshot is a manifest the vault keeps after a commit replaces it, sharing the
+vault's stored objects, listed in a sealed head-bound `snapshot_index` row
+with the set of object IDs snapshots retain. Core arms every mutation; its
+first commit keeps the replaced manifest when one is due (none yet, the newest
+over an hour old, or none from today), and reads write nothing. Archive and
+LAN merges, baseline adoption and a conflict resolution that installs a final
+deletion keep a recovery snapshot of their pre-state in the same transaction.
+Explicit deletions (emptying the trash, final deletion, attachment removal,
+history purge) take no copy and, unless the user keeps them, remove the
+snapshots holding the deleted data in the same commit. Budgets are 30 days, 48
+snapshots and 1 GiB of snapshot-only data, pruned oldest first inside the
+commit; a snapshot that cannot fit is skipped, never the commit. Restore
+streams the snapshot as an ordinary slotless archive to a private temporary
+file beside the new path and restores that. A VK rotation still writes its
+recovery copy as an archive file in the private snapshot directory (the new
+file carries no snapshots); files written before plan 0059 stay listable,
+restorable and pruned by age and count, and a `recover-` file left by a crash
+is reclassified before pruning.
 `qv verify` is a read-only full re-hash/authentication pass that reports the
 local head and the anchor comparison; it never repairs vault contents. Opening
 may complete an external anchor update left pending by a durable commit

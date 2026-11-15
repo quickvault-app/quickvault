@@ -160,6 +160,9 @@ pub enum AppError {
     NoFilePicker,
     /// An attachment could not be decrypted and verified for a preview.
     PreviewUnavailable,
+    /// Media this system would have to hold whole in memory is too large to
+    /// preview here (0003 §6.4, plan 0059).
+    PreviewTooLarge,
     /// An item needs a title and every field a name before it is saved.
     NameRequired,
     /// A vault name that cannot be a file name (0009 §1.8).
@@ -266,6 +269,9 @@ impl AppError {
             }
             Self::NoFilePicker => {
                 "No file chooser is available on this desktop. It needs xdg-desktop-portal with a backend such as xdg-desktop-portal-gtk."
+            }
+            Self::PreviewTooLarge => {
+                "This file is too large to preview on this system. Save a copy to open it in another app."
             }
             Self::PreviewUnavailable => {
                 "This file can't be previewed. Save a copy to open it elsewhere."
@@ -408,8 +414,6 @@ pub struct View {
     pub rotation_confirmed: bool,
     /// An interrupted rotation must be finished before unlocking.
     pub resume: Option<Resume>,
-    /// Baseline adoption awaits over-budget consent for this many bytes.
-    pub over_budget: Option<u64>,
     /// Seconds left in a running LAN window; 0 when none.
     pub lan_seconds: u64,
     /// A bounded native QR scan is using the worker.
@@ -463,10 +467,8 @@ pub enum Action {
     ConfirmPhrase,
     /// Record explicit phrase-confirmation skip.
     SkipPhrase,
-    /// Snapshot then accept a new recovery baseline.
+    /// Accept a new recovery baseline.
     AdoptBaseline,
-    /// Accept the baseline after consenting to an over-budget recovery snapshot.
-    AdoptBaselineOverBudget,
     /// Confirm three words of a prepared rotation's new phrase.
     ConfirmRotation,
     /// Install the confirmed rotation.
@@ -525,8 +527,6 @@ pub(crate) struct State {
     rotation_confirmed: bool,
     /// An interrupted rotation for this path must be finished first.
     resume: Option<(PathBuf, Resume)>,
-    /// Baseline adoption needs consent for this many over-budget bytes.
-    over_budget: Option<u64>,
     /// Unverified header read before unlocking (the session then holds the file).
     pub(crate) about: Option<crate::views::AboutView>,
     /// A native autofill request (0009 §4.4); see [`crate::autofill`].
@@ -577,7 +577,6 @@ impl State {
         self.rotation = None;
         self.rotation_confirmed = false;
         self.resume = None;
-        self.over_budget = None;
         self.about = None;
         self.workspace = None;
         self.vault_path = None;
@@ -715,7 +714,6 @@ impl Controller {
                 rotation: None,
                 rotation_confirmed: false,
                 resume: None,
-                over_budget: None,
                 about: None,
                 autofill: None,
                 lan: None,
@@ -1350,7 +1348,6 @@ impl Controller {
                 && s.suggestion_until.is_some_and(|t| Instant::now() < t),
             rotation_confirmed: s.rotation_confirmed,
             resume: s.resume.as_ref().map(|r| r.1),
-            over_budget: s.over_budget,
             lan_seconds: s.lan.as_ref().map_or(0, crate::lan::LanRun::seconds),
             scanning: s.scan.is_some(),
             idle_left: if s.phase == Phase::Unlocked {
@@ -1624,15 +1621,7 @@ impl Controller {
             enter_workspace(&mut s);
             return Ok(());
         }
-        if matches!(
-            action,
-            Action::SkipPhrase | Action::AdoptBaseline | Action::AdoptBaselineOverBudget
-        ) {
-            if matches!(action, Action::AdoptBaselineOverBudget) && s.over_budget.is_none() {
-                return Err(AppError::InvalidInput);
-            }
-            let allow_over = matches!(action, Action::AdoptBaselineOverBudget);
-            s.over_budget = None;
+        if matches!(action, Action::SkipPhrase | Action::AdoptBaseline) {
             let expected = if matches!(action, Action::SkipPhrase) {
                 Phase::Phrase
             } else {
@@ -1655,17 +1644,10 @@ impl Controller {
                 .spawn(move || {
                     let _wake = WakeOnDrop;
                     let _worker = worker;
-                    let mut cleanup_pending = false;
                     let result = if matches!(action, Action::SkipPhrase) {
                         session.record_recovery_skip()
                     } else {
-                        session
-                            .begin_destructive(allow_over, Some(&token))
-                            .and_then(|copy| {
-                                session.adopt_baseline()?;
-                                cleanup_pending = session.finish_destructive(copy).is_err();
-                                Ok(())
-                            })
+                        session.adopt_baseline()
                     };
                     let mut s = controller.state();
                     if s.epoch == next && !token.is_cancelled() {
@@ -1673,18 +1655,9 @@ impl Controller {
                             Ok(()) => {
                                 s.phrase = None;
                                 s.phase = Phase::Unlocked;
-                                s.status = if cleanup_pending {
-                                    "Baseline accepted; recovery snapshot cleanup is incomplete."
-                                } else {
-                                    "Vault ready"
-                                };
+                                s.status = "Vault ready";
                                 s.error = None;
                                 enter_workspace(&mut s);
-                            }
-                            Err(CoreError::SnapshotOverBudget { needed }) => {
-                                s.over_budget = Some(needed);
-                                s.error =
-                                    Some(AppError::Core(CoreError::SnapshotOverBudget { needed }));
                             }
                             Err(e) => {
                                 s.error = Some(e.into());
@@ -2861,7 +2834,7 @@ mod tests {
     }
     // 0012 §1: Whole-file rollback
     #[test]
-    fn flows_missing_anchor_requires_snapshot_and_explicit_baseline_consent() {
+    fn flows_missing_anchor_requires_explicit_baseline_consent() {
         let _k = KDF.lock().unwrap();
         let env = Env::new();
         env.create();
@@ -2894,11 +2867,13 @@ mod tests {
             .unwrap();
         env.wait();
         assert_eq!(env.controller.snapshot().phase, Phase::Unlocked);
+        // Adoption changes no stored object and takes no recovery copy (plan
+        // 0059): no snapshot file is written.
         assert!(
             std::fs::read_dir(env.dir.join("snapshots"))
                 .unwrap()
                 .next()
-                .is_some()
+                .is_none()
         );
     }
     // 0012 §1: Ambiguous trust boundary

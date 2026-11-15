@@ -186,7 +186,7 @@ impl crate::UnlockedVault {
     /// The committed manifest envelope and its references, for serving.
     pub fn lan_serve_state(&self) -> Result<LanServeState, StoreError> {
         let header = self.file.header;
-        let stored = crate::schema::read_manifest(&self.file.conn)?;
+        let stored = crate::schema::read_manifest(&self.file.conn, &self.state.head.manifest_hash)?;
         if stored.hash != self.state.head.manifest_hash
             || stored.key_generation != header.key_generation
         {

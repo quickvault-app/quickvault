@@ -335,7 +335,8 @@ impl Session {
                 if ctx.open.read_only {
                     return Err(qv_store::StoreError::NoAnchor.into());
                 }
-                crate::snapshot::require_recovery(ctx)?;
+                let now = ctx.now();
+                crate::snapshot::arm_recovery(ctx.open, now);
                 v.ext = Extensions::new();
             }
             let seq = ctx.open.vault.local_seq();

@@ -294,13 +294,15 @@ class MainActivity : WryActivity() {
     @Volatile private var pickState = 2
     @Volatile private var pickedUri: Uri? = null
     @Volatile private var pickedName: String? = null
+    /** The provider's reported size of the pick, or -1; only for a warning. */
+    @Volatile private var pickedSize: Long = -1
     private var reader: java.io.InputStream? = null
     private var writer: java.io.FileOutputStream? = null
     private var writerFd: android.os.ParcelFileDescriptor? = null
     fun qvPick(create: Boolean, archive: Boolean): Long {
         val request = synchronized(this) {
             if (pickState == 0 || pickId >= 65534) return -1L
-            pickId += 1; pickCode = pickId.toInt(); pickState = 0; pickedUri = null; pickedName = null
+            pickId += 1; pickCode = pickId.toInt(); pickState = 0; pickedUri = null; pickedName = null; pickedSize = -1
             Pair(pickId, pickCode)
         }
         val intent = Intent(if (create) Intent.ACTION_CREATE_DOCUMENT else Intent.ACTION_OPEN_DOCUMENT)
@@ -324,16 +326,20 @@ class MainActivity : WryActivity() {
             selected
         }
         // Provider IPC must not hold the metadata monitor needed by lock.
+        var size = -1L
         val name = try {
-            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) { if (!c.isNull(1)) size = c.getLong(1); c.getString(0) } else null
+            }
         } catch (e: Exception) { null }?.take(255) ?: uri.lastPathSegment?.take(255)
         synchronized(this) {
             if (requestCode != pickCode || pickState != 0) return
-            pickedName = name; pickedUri = uri; pickState = 1
+            pickedName = name; pickedSize = size; pickedUri = uri; pickState = 1
         }
     }
     fun qvPickState(id: Long): Int = if (id == pickId) pickState else 2
     fun qvPickedName(): String? = pickedName?.take(255)
+    fun qvPickedSize(): Long = pickedSize
     fun qvOpenRead(id: Long): Boolean {
         qvCloseDoc(false)
         val uri = pickedUri ?: return false

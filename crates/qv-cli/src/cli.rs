@@ -24,6 +24,8 @@ arguments or environment variables.";
 const STDIN_HELP: &str = "Read the master password from the first line of standard input \
 (for scripts; prefer piping from a keyring tool over echo or script files)";
 
+const KEEP_SNAPSHOTS_HELP: &str =
+    "Keep the local snapshots that hold the deleted data (they are removed otherwise)";
 const REVEAL_HELP: &str =
     "Print protected values (they stay in the terminal scrollback and any terminal log)";
 
@@ -73,8 +75,7 @@ pub(crate) fn command() -> Command {
             .subcommand(Command::new("rotate").about("Create a new key generation, phrase and password (resumable); always asks you to type `rotate`")))
         .subcommand(Command::new("merge")
             .about("Authenticate and merge an archive; preserves unresolved conflicts")
-            .arg(Arg::new("archive").required(true).value_parser(value_parser!(PathBuf)))
-            .arg(flag("allow-over-budget", "Allow the mandatory recovery copy to exceed ordinary snapshot budgets")))
+            .arg(Arg::new("archive").required(true).value_parser(value_parser!(PathBuf))))
         .subcommand(Command::new("conflicts").about("Inspect complete conflict versions of every record kind")
             .arg(Arg::new("target")).arg(flag("reveal", REVEAL_HELP)))
         .subcommand(Command::new("resolve").about("Resolve from one complete active version; unseen edits may remain concurrent")
@@ -203,7 +204,8 @@ pub(crate) fn command() -> Command {
                         .about("Restore a trashed item")
                         .arg(Arg::new("item").required(true)),
                 )
-                .subcommand(Command::new("empty").about("Permanently delete non-conflicted trash")),
+                .subcommand(Command::new("empty").about("Permanently delete non-conflicted trash")
+                    .arg(flag("keep-snapshots", KEEP_SNAPSHOTS_HELP))),
         )
         .subcommand(
             Command::new("snapshot")
@@ -243,7 +245,7 @@ fn attach_command() -> Command {
         .subcommand(Command::new("save").about("Export plaintext to a NEW explicit file; failure/crash can leave incomplete plaintext")
             .arg(entry()).arg(attachment()).arg(path("path")))
         .subcommand(Command::new("rm").about("Permanently remove; independent copies may remain, with no secure-erasure guarantee")
-            .arg(entry()).arg(attachment()))
+            .arg(entry()).arg(attachment()).arg(flag("keep-snapshots", KEEP_SNAPSHOTS_HELP)))
 }
 
 fn lan_command() -> Command {
@@ -320,7 +322,8 @@ fn history_command() -> Command {
         .subcommand(
             Command::new("purge")
                 .about("Suppress local history; independent copies may remain, no secure erasure")
-                .arg(Arg::new("entry").required(true)),
+                .arg(Arg::new("entry").required(true))
+                .arg(flag("keep-snapshots", KEEP_SNAPSHOTS_HELP)),
         )
 }
 

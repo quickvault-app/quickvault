@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! `qv snapshot ls` and the `trash empty` recovery-snapshot ordering
-//! (0011 §4–5, 0007 §3).
+//! `qv snapshot ls`, snapshots kept inside commits and what `trash empty`
+//! does to them (0011 §4–5, 0007 §3; plan 0059).
 #![cfg(any(target_os = "linux", target_os = "android"))]
 #![allow(clippy::unwrap_used, clippy::panic)]
 mod common;
@@ -26,12 +26,23 @@ fn trashed_entry(s: &Session) -> ItemHandle {
     e
 }
 
+/// A change made with the CLI's snapshot policy: its commit keeps the state
+/// before it inside the vault, at most once an hour (plan 0059).
+fn change(h: &Home, name: &str) {
+    let o = run(h, &["mkdir", name]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+}
+
 #[test]
 fn snapshot_ls_lists_authenticated_local_snapshots() {
     let h = Home::new();
     let s = h.create();
     drop(s);
-    // The first unlock of the day takes one ordinary snapshot.
+    // A read keeps nothing; the first change keeps one ordinary snapshot.
+    let o = run(&h, &["snapshot", "ls"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stdout.is_empty(), "{}", o.stdout);
+    change(&h, "First");
     let o = run(&h, &["snapshot", "ls"]);
     assert_eq!(o.code, 0, "{}", o.stderr);
     let lines: Vec<&str> = o.stdout.lines().collect();
@@ -44,7 +55,7 @@ fn snapshot_ls_lists_authenticated_local_snapshots() {
         "{row}"
     );
     assert!(row.contains("ordinary"), "{row}");
-    assert!(row.contains(" bytes on disk "), "{row}");
+    assert!(row.contains(" bytes kept "), "{row}");
     assert!(row.contains(" objects  "), "{row}");
 
     let o = run(&h, &["--json", "snapshot", "ls"]);
@@ -59,10 +70,12 @@ fn snapshot_ls_lists_authenticated_local_snapshots() {
     assert!(json.ends_with("}]}"), "{json}");
     assert!(!json.contains(&h.root.to_string_lossy().to_string()));
 
-    // A second unlock inside the hour coalesces: still one snapshot.
+    // A second change inside the hour coalesces: still one, and no file.
+    change(&h, "Second");
     let o = run(&h, &["snapshot", "ls"]);
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert_eq!(o.stdout.lines().count(), 1, "{}", o.stdout);
+    assert_eq!(std::fs::read_dir(h.snapshots()).unwrap().count(), 0);
 }
 
 // 0012 §1: Hostile files from sync folders
@@ -74,6 +87,7 @@ fn hostile_files_from_sync_folders_are_warnings_not_rows() {
     let h = Home::new();
     let s = h.create();
     drop(s);
+    change(&h, "Kept");
     let o = run(&h, &["snapshot", "ls"]);
     assert_eq!(o.code, 0, "{}", o.stderr);
     let healthy = o.stdout.lines().count();
@@ -101,87 +115,62 @@ fn hostile_files_from_sync_folders_are_warnings_not_rows() {
 }
 
 #[test]
-fn trash_empty_takes_a_recovery_snapshot_before_the_deletion() {
-    let h = Home::new();
-    let s = h.create();
-    let item = trashed_entry(&s);
-    let seq = s.overview().unwrap().local_seq;
-    drop(s);
-
-    let o = run(&h, &["--yes", "trash", "empty"]);
-    assert_eq!(o.code, 0, "{}", o.stderr);
-    assert!(o.stdout.is_empty(), "{}", o.stdout);
-    let s = h.unlock();
-    assert!(s.trash().unwrap().is_empty());
-    assert_eq!(s.overview().unwrap().local_seq, seq + 1, "one purge commit");
-    assert!(s.find_id(&item.id_hex(), true).unwrap().is_empty());
-    drop(s);
-
-    // After completion the copy is an ordinary snapshot, and no `recover-`
-    // file is left behind (0007 §3.2).
-    let o = run(&h, &["--json", "snapshot", "ls"]);
-    assert_eq!(o.code, 0, "{}", o.stderr);
-    assert!(o.stdout.contains("\"kind\":\"ordinary\""), "{}", o.stdout);
-    assert!(!o.stdout.contains("\"kind\":\"recovery\""), "{}", o.stdout);
-    let names: Vec<String> = std::fs::read_dir(h.snapshots())
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(names.len(), 2, "{names:?}");
-    assert!(
-        !names.iter().any(|n| n.starts_with("recover-")),
-        "{names:?}"
-    );
+fn trash_empty_takes_no_copy_and_removes_the_snapshots_holding_the_items() {
+    for keep in [false, true] {
+        let h = Home::new();
+        let s = h.create();
+        let item = trashed_entry(&s);
+        drop(s);
+        // This change keeps the state holding the trashed entry.
+        change(&h, "Other");
+        let seq = h.unlock().overview().unwrap().local_seq;
+        let mut args = vec!["--yes", "trash", "empty"];
+        if keep {
+            args.push("--keep-snapshots");
+        }
+        let o = run(&h, &args);
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        assert!(o.stdout.is_empty(), "{}", o.stdout);
+        let s = h.unlock();
+        assert!(s.trash().unwrap().is_empty());
+        assert_eq!(s.overview().unwrap().local_seq, seq + 1, "one purge commit");
+        assert!(s.find_id(&item.id_hex(), true).unwrap().is_empty());
+        drop(s);
+        // Without --keep-snapshots the snapshot holding it went with it; no
+        // recovery file was written either way.
+        let o = run(&h, &["snapshot", "ls"]);
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        assert_eq!(o.stdout.lines().count(), usize::from(keep), "{}", o.stdout);
+        assert_eq!(std::fs::read_dir(h.snapshots()).unwrap().count(), 0);
+    }
 }
 
 // 0012 §1: Snapshot disk growth
 #[test]
-fn snapshot_disk_growth_a_snapshot_failure_aborts_the_destructive_operation() {
-    // 0012 §1 row "Snapshot disk growth": the mandatory recovery copy cannot
-    // be written, so the deletion is aborted with nothing purged.
+fn snapshot_disk_growth_deletion_needs_no_snapshot_directory() {
+    // 0012 §1 row "Snapshot disk growth": deletion takes no recovery copy
+    // (plan 0059), so an unusable snapshot directory only disables
+    // snapshots; the deletion itself still commits.
     let h = Home::new();
     let s = h.create();
     trashed_entry(&s);
     let seq = s.overview().unwrap().local_seq;
     drop(s);
-
-    // (1) An unsafe private directory is refused before anything is deleted;
-    // the mode check does not depend on the process's privileges.
     let dir = h.snapshots();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
     let o = run(&h, &["--yes", "trash", "empty"]);
-    assert_eq!(o.code, 1, "{}", o.stderr);
+    assert_eq!(o.code, 0, "{}", o.stderr);
     assert!(
-        o.stderr.contains("no usable private snapshot directory"),
+        o.stderr.contains("local snapshots are disabled"),
         "{}",
         o.stderr
     );
     assert!(o.stdout.is_empty());
-
-    // (2) A directory that cannot be written is the same abort through the
-    // I/O path. A process with permission-override privileges (uid 0 in a
-    // user namespace, e.g. `unshare -rn`) cannot produce that failure; the
-    // store's writer covers the disk-full error path separately.
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-    let denied = std::fs::write(dir.join("probe"), b"").is_err();
-    let _ = std::fs::remove_file(dir.join("probe"));
-    if denied {
-        let o = run(&h, &["--yes", "trash", "empty"]);
-        assert_eq!(o.code, 1, "{}", o.stderr);
-        assert!(o.stderr.contains("input/output"), "{}", o.stderr);
-    } else {
-        eprintln!(
-            "note: permission-override privileges; the read-only-directory arm is covered by \
-             the unsafe-directory abort above"
-        );
-    }
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-
-    // Nothing was purged and the vault did not change.
     let s = h.unlock();
-    assert_eq!(s.trash().unwrap().len(), 1);
-    assert_eq!(s.overview().unwrap().local_seq, seq);
+    assert!(s.trash().unwrap().is_empty());
+    assert_eq!(s.overview().unwrap().local_seq, seq + 1);
 }
 
 #[test]
@@ -192,6 +181,7 @@ fn snapshot_restore_creates_a_new_baseline_and_preserves_active_vault() {
     s.save_entry(s.new_entry(root, "login", "Snapshot entry").unwrap())
         .unwrap();
     drop(s);
+    change(&h, "After the snapshot");
     let listed = run(&h, &["snapshot", "ls"]);
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     let id = listed.stdout.lines().next().unwrap()[..32].to_owned();
@@ -276,6 +266,12 @@ fn snapshot_restore_preflight_and_addressing_errors() {
 fn snapshot_restore_slot_bearing_header_is_integrity() {
     let h = Home::new();
     drop(h.create());
+    // A rotation-style recovery file, the remaining kind of snapshot file.
+    {
+        let s = h.unlock_with_snapshots();
+        let copy = s.begin_destructive(false, None).unwrap();
+        s.finish_destructive(copy).unwrap();
+    }
     let listed = run(&h, &["snapshot", "ls"]);
     assert_eq!(listed.code, 0, "{}", listed.stderr);
     let id = &listed.stdout.lines().next().unwrap()[..32];

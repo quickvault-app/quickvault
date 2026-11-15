@@ -61,22 +61,22 @@ fn exchange_merge_is_durable_idempotent_preserves_conflicts_and_rejects_changed_
     s.delete(crate::ItemHandle::Entry(entry), false).unwrap();
     let dir = TestDir::new();
     let source = export(&remote, &dir, false);
-    let r = s.merge_archive(&source, false, None).unwrap();
+    let r = s.merge_archive(&source, None).unwrap();
     assert!(r.accepted);
     assert_eq!(r.conflicts, 1);
     assert_eq!(r.completion_error, None);
     assert_eq!(s.trash().unwrap().len(), 1);
     assert!(s.verify(None).unwrap().ok());
     let seq = s.overview().unwrap().local_seq;
-    assert!(!s.merge_archive(&source, false, None).unwrap().accepted);
+    assert!(!s.merge_archive(&source, None).unwrap().accepted);
     assert_eq!(s.overview().unwrap().local_seq, seq);
     s.lock();
     let s = env.unlock_with(Some(env.snapshot_policy()));
-    assert!(!s.merge_archive(&source, false, None).unwrap().accepted);
+    assert!(!s.merge_archive(&source, None).unwrap().accepted);
     let newer = export(&remote, &dir, false);
     std::fs::copy(&newer, &source).unwrap();
     assert_eq!(
-        err(s.merge_archive(&source, false, None)),
+        err(s.merge_archive(&source, None)),
         CoreError::Store(StoreError::Integrity)
     );
     assert_eq!(s.overview().unwrap().local_seq, seq);
@@ -90,24 +90,18 @@ fn exchange_requires_recovery_policy_budget_and_preflight_views_before_acceptanc
     add(&s, "confidential metadata");
     let dir = TestDir::new();
     let source = export(&s, &dir, false);
-    assert_eq!(
-        err(s.merge_archive(&source, false, None)),
-        CoreError::NotAllowed
-    );
+    assert_eq!(err(s.merge_archive(&source, None)), CoreError::NotAllowed);
     s.lock();
     let mut policy = env.snapshot_policy();
     policy.max_bytes = 1;
     let s = env.unlock_with(Some(policy));
     let seq = s.overview().unwrap().local_seq;
-    assert!(matches!(
-        err(s.merge_archive(&source, false, None)),
-        CoreError::SnapshotOverBudget { .. }
-    ));
     // Cache residency is independent of candidate validity (0047): even a
     // one-byte cache must accept the fully authenticated archive and load its
-    // uncachable metadata on demand. Snapshot approval remains explicit.
+    // uncachable metadata on demand. The recovery snapshot needs no budget
+    // approval any more (plan 0059).
     assert!(
-        s.merge_archive_with_budget(&source, true, None, 1)
+        s.merge_archive_with_budget(&source, None, 1)
             .unwrap()
             .accepted
     );
@@ -118,21 +112,16 @@ fn exchange_requires_recovery_policy_budget_and_preflight_views_before_acceptanc
         Ok(())
     })
     .unwrap();
-    assert!(!s.merge_archive(&source, true, None).unwrap().accepted);
-    assert!(
-        s.snapshots()
-            .unwrap()
-            .snapshots
-            .iter()
-            .any(|r| r.created_at.0 > 0)
-    );
+    assert!(!s.merge_archive(&source, None).unwrap().accepted);
+    // An identical archive changes no stored object, so no snapshot is kept.
+    assert!(s.snapshots().unwrap().snapshots.is_empty());
     // A missing directory cannot be bypassed even by size approval.
     std::fs::rename(
         env.dir.path().join("snapshots"),
         env.dir.path().join("saved-snapshots"),
     )
     .unwrap();
-    assert!(s.merge_archive(&source, true, None).is_err());
+    assert!(s.merge_archive(&source, None).is_err());
 }
 
 // 0012 §1: Exchange-file password guessing
@@ -198,7 +187,7 @@ fn exchange_postcommit_anchor_error_reports_acceptance_and_keeps_matching_index(
                 arrive_tx,
                 go_rx,
             );
-            s.merge_archive(&source, false, None)
+            s.merge_archive(&source, None)
         })
     };
     arrive_rx.recv().unwrap();
@@ -241,7 +230,7 @@ fn exchange_lock_before_and_after_commit_reports_actual_state() {
                     arrive_tx,
                     go_rx,
                 );
-                s.merge_archive(&source, false, None)
+                s.merge_archive(&source, None)
             })
         };
         arrive_rx.recv().unwrap();
@@ -283,7 +272,7 @@ fn exchange_backup_preserves_working_slot_when_imported_keyslots_conflict() {
     }
     let dir = TestDir::new();
     let source = export(&remote, &dir, false);
-    let report = s.merge_archive(&source, false, None).unwrap();
+    let report = s.merge_archive(&source, None).unwrap();
     assert!(report.accepted);
     assert_eq!(report.conflicts, 1);
     let backup = export(&s, &dir, true);

@@ -44,7 +44,7 @@ use qv_sync::lan::{
 pub use qv_platform::net::local_addresses;
 pub use qv_sync::lan::{
     EnrollmentCredential, JoinCode, JoinMode, JoinerUi, LanError, LanQrInfo, LanTimeouts,
-    ListenScope, PAIRING_WINDOW_MAX, Sas, parse_endpoint,
+    ListenScope, PAIRING_WINDOW_MAX, Sas, parse_endpoint, receive_progress,
 };
 
 /// Inspect a scanned LAN code without initiating any network operation.

@@ -68,7 +68,7 @@ use zeroize::Zeroizing;
 
 use crate::error::StoreError;
 use crate::limits::{
-    MAX_ARCHIVE_MANIFEST_FRAME, MAX_ARCHIVE_OBJECT_FRAME, MAX_ARCHIVE_TOTAL_LENGTH, MAX_OBJECTS,
+    MAX_ARCHIVE_MANIFEST_FRAME, MAX_ARCHIVE_OBJECT_FRAME, MAX_ARCHIVE_TOTAL_LENGTH, MAX_REFERENCES,
 };
 use crate::manifest::{ObjectRef, config_digest_for, open_manifest};
 use crate::object::Scope;
@@ -108,6 +108,28 @@ const KEY_HEADER_MAC: i64 = 11;
 
 /// The fixed prefix: magic, then the format version.
 const PREFIX_BYTES: usize = ARCHIVE_MAGIC.len() + 1;
+
+/// What a local snapshot is for (0007 §3.2). A snapshot file records it only
+/// in its name, never in the archive (0004 §6); the vault's snapshot index
+/// records it per row (0004 §2.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotKind {
+    /// An automatic or user-visible snapshot.
+    Ordinary,
+    /// The pre-operation state of an operation that changes what the vault
+    /// holds without the user choosing it (0007 §3.2).
+    Recovery,
+}
+
+impl SnapshotKind {
+    /// The fixed label `ordinary` or `recovery` (0011 §4).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ordinary => "ordinary",
+            Self::Recovery => "recovery",
+        }
+    }
+}
 
 fn malformed<E>(_: E) -> StoreError {
     StoreError::Integrity
@@ -287,7 +309,7 @@ impl ArchiveHeader {
             return Err(StoreError::Unsupported);
         }
         let object_count = object_count.ok_or(StoreError::Integrity)?;
-        if usize::try_from(object_count).map_or(true, |n| n > MAX_OBJECTS) {
+        if usize::try_from(object_count).map_or(true, |n| n > MAX_REFERENCES) {
             return Err(StoreError::LimitExceeded);
         }
         let total_length = total_length.ok_or(StoreError::Integrity)?;
@@ -974,29 +996,11 @@ mod platform {
     /// the kind is bookkeeping outside the archive format).
     const RECOVERY_PREFIX: &str = "recover-";
 
-    /// What a local snapshot is for (0007 §3.2). It is recorded only in the
-    /// file name, never in the archive (0004 §6).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum SnapshotKind {
-        /// An automatic or user-visible snapshot.
-        Ordinary,
-        /// The mandatory pre-operation copy of a destructive operation.
-        Recovery,
-    }
-
     impl SnapshotKind {
         fn prefix(self) -> &'static str {
             match self {
                 Self::Ordinary => "",
                 Self::Recovery => RECOVERY_PREFIX,
-            }
-        }
-
-        /// The fixed label `ordinary` or `recovery` (0011 §4).
-        pub fn label(self) -> &'static str {
-            match self {
-                Self::Ordinary => "ordinary",
-                Self::Recovery => "recovery",
             }
         }
     }
@@ -1177,6 +1181,105 @@ mod platform {
             }
         }
 
+        /// Restores one kept local snapshot into a new vault at `path`
+        /// (0007 §3.1, §3.4): its archive is written to a private temporary
+        /// file beside `path`, re-read by the ordinary archive restore with
+        /// this vault's key and working password slot, then removed. The
+        /// active vault and its anchor are unchanged.
+        pub fn restore_snapshot(
+            &self,
+            id: &[u8; 16],
+            path: &Path,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<(), StoreError> {
+            self.check_identity()?;
+            let name = path.file_name().ok_or(StoreError::Unsupported)?;
+            let mut temp_name = name.to_os_string();
+            temp_name.push(SNAPSHOT_SUFFIX);
+            let placeholder = path.with_file_name(temp_name);
+            fs::remove_stale_temps(&placeholder)?;
+            let (locked, temp) = fs::create_temp(&placeholder)?;
+            let result = (|| {
+                let mut file = locked.into_archive_file();
+                let stats = self.write_snapshot_archive(id, &mut file, cancelled)?;
+                fs::sync_file(&file)?;
+                drop(file);
+                let mut archive_id = [0u8; 16];
+                for (i, byte) in archive_id.iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(
+                        stats
+                            .archive_id
+                            .get(i * 2..i * 2 + 2)
+                            .ok_or(StoreError::Internal)?,
+                        16,
+                    )
+                    .map_err(|_| StoreError::Internal)?;
+                }
+                let scope = ArchiveScope::new(self.header().vault_id, self.header().key_generation)
+                    .with_archive_id(archive_id);
+                let mut input = std::io::BufReader::new(fs::open_private_ro(&temp)?);
+                crate::VaultFile::create_from_archive_with_slot(
+                    path,
+                    &mut input,
+                    scope,
+                    self.vault_key(),
+                    &self.anchors,
+                    cancelled,
+                    Some(crate::slot::password_slot(&self.file.slots)?),
+                )
+            })();
+            fs::remove_best_effort(&temp);
+            result
+        }
+
+        /// Streams one kept local snapshot as an ordinary slotless archive
+        /// (0007 §3.1, plan 0059): the same writer as [`Self::write_archive`],
+        /// with the snapshot's manifest. Every object is re-read and checked
+        /// against its reference before its frame is written.
+        pub fn write_snapshot_archive<W: Write>(
+            &self,
+            id: &[u8; 16],
+            mut out: W,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<ArchiveStats, StoreError> {
+            let row = *self
+                .snapshot_rows()
+                .iter()
+                .find(|r| &r.id == id)
+                .ok_or(StoreError::NotFound)?;
+            self.begin_read()?;
+            let result = (|| {
+                let keys = crate::vault::Keys::derive(&self.vk, &self.file.header)?;
+                let (manifest, _) = crate::snapshot_commit::open_kept(
+                    &self.file.conn,
+                    &keys,
+                    &self.file.header,
+                    &row.manifest_hash,
+                )?;
+                if manifest.reference_digest()? != row.reference_digest {
+                    return Err(StoreError::Integrity);
+                }
+                self.archive_stream_of(
+                    &mut out,
+                    row.created_at,
+                    false,
+                    cancelled,
+                    &manifest,
+                    &row.manifest_hash,
+                )
+            })();
+            match result {
+                Ok(stats) => {
+                    self.end_read()?;
+                    Ok(stats)
+                }
+                Err(e) => {
+                    self.abort_read();
+                    Err(e)
+                }
+            }
+        }
+
         /// The archive pass itself, inside the caller's read transaction.
         fn archive_stream<W: Write>(
             &mut self,
@@ -1185,19 +1288,37 @@ mod platform {
             self_contained: bool,
             cancelled: &dyn Fn() -> bool,
         ) -> Result<ArchiveStats, StoreError> {
+            let hash = self.state.head.manifest_hash;
+            self.archive_stream_of(
+                out,
+                created_at,
+                self_contained,
+                cancelled,
+                &self.state.manifest,
+                &hash,
+            )
+        }
+
+        /// The archive pass over `manifest`, whose stored row is `hash`.
+        fn archive_stream_of<W: Write>(
+            &self,
+            out: &mut W,
+            created_at: Timestamp,
+            self_contained: bool,
+            cancelled: &dyn Fn() -> bool,
+            manifest: &manifest::Manifest,
+            hash: &[u8; 32],
+        ) -> Result<ArchiveStats, StoreError> {
             let header = self.file.header;
-            let manifest = &self.state.manifest;
             if cancelled() {
                 return Err(StoreError::Io);
             }
 
-            // The stored manifest row must be the one the verified head names,
-            // and its re-encoded envelope must hash to the stored hash (0004
-            // §3.5).
-            let stored = schema::read_manifest(&self.file.conn)?;
-            if stored.hash != self.state.head.manifest_hash
-                || stored.key_generation != header.key_generation
-            {
+            // The stored manifest row must be the one the verified head (or
+            // snapshot index) names, and its re-encoded envelope must hash
+            // to the stored hash (0004 §3.5).
+            let stored = schema::read_manifest(&self.file.conn, hash)?;
+            if stored.hash != *hash || stored.key_generation != header.key_generation {
                 return Err(StoreError::Integrity);
             }
             let profile = accepted_profile(&header, stored.data_profile)?;
@@ -1654,7 +1775,7 @@ mod platform {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
-pub use platform::{PublishedSnapshot, SnapshotDir, SnapshotEntry, SnapshotKind};
+pub use platform::{PublishedSnapshot, SnapshotDir, SnapshotEntry};
 
 #[cfg(test)]
 mod tests {
@@ -1898,7 +2019,7 @@ mod tests {
             "unknown stored-data profile"
         );
         assert_eq!(
-            decode_err(&with_value(8, uint(MAX_OBJECTS as u64 + 1))),
+            decode_err(&with_value(8, uint(MAX_REFERENCES as u64 + 1))),
             Some(StoreError::LimitExceeded),
             "object_count over the budget"
         );

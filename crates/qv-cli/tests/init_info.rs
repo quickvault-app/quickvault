@@ -294,7 +294,7 @@ fn info_unverified_and_full() {
     assert!(out.stdout.starts_with("Vault header (unverified"));
     assert!(
         out.stdout
-            .contains("format:          0x7fff0004 (development")
+            .contains("format:          0x7fff0005 (development")
     );
     assert!(
         out.stdout

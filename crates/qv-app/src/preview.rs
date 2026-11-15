@@ -115,6 +115,8 @@ pub fn sniff(b: &[u8]) -> (Kind, &'static str) {
     (Kind::Unsupported, "application/octet-stream")
 }
 
+/// Largest non-MP4 media the Linux viewer plays from memory (0003 §6.4).
+pub(crate) const MEMORY_MEDIA_MAX: u64 = 256 * 1024 * 1024;
 /// Maximum retained plaintext prefix, independent of attachment size.
 const PREFIX_MAX: usize = TEXT_SHOWN + 4;
 const RANGE_MAX: usize = 64 * 1024;
@@ -402,6 +404,16 @@ pub(crate) fn open(
     size: u64,
 ) -> Result<Opened, AppError> {
     close();
+    // Linux plays media from renderer memory (0003 §6.4): an MP4 streams
+    // around the playback position, anything else is held whole, so it is
+    // bounded here (plan 0059).
+    if cfg!(target_os = "linux")
+        && matches!(prepared.kind, Kind::Audio | Kind::Video)
+        && !matches!(prepared.mime, "video/mp4" | "audio/mp4")
+        && size > MEMORY_MEDIA_MAX
+    {
+        return Err(AppError::PreviewTooLarge);
+    }
     let mut opened = Opened {
         kind: prepared.kind,
         mime: prepared.mime,

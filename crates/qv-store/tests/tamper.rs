@@ -143,10 +143,6 @@ fn tamper_schema_changes_are_refused() {
         ("DELETE FROM replica", StoreError::Integrity),
         ("DELETE FROM local_head", StoreError::Integrity),
         ("DELETE FROM manifest", StoreError::Integrity),
-        (
-            "INSERT INTO manifest SELECT randomblob(32), key_generation, data_profile, nonce, ciphertext FROM manifest",
-            StoreError::Integrity,
-        ),
         ("UPDATE replica SET next_counter = 0", StoreError::Integrity),
         ("UPDATE local_head SET mac = x'00'", StoreError::Integrity),
     ];
@@ -159,6 +155,28 @@ fn tamper_schema_changes_are_refused() {
 }
 
 // 0012 §1: Hostile SQLite/CBOR
+// An extra manifest row is shaped like a kept snapshot's (0004 §2.5), so
+// opening allows it; unlock refuses any row neither the head nor the
+// authenticated snapshot index names.
+#[test]
+fn tamper_unnamed_manifest_row_is_refused_at_unlock() {
+    let d = Dir::new();
+    let p = copy(&d);
+    Connection::open(&p)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO manifest SELECT randomblob(32), key_generation, data_profile, nonce, ciphertext FROM manifest",
+        )
+        .unwrap();
+    let pw = MasterPassword::from_utf8(b"tamper test password").unwrap();
+    let anchors = AnchorDir::open(&d.0.join("anchors")).unwrap();
+    let file = VaultFile::open(&p).unwrap();
+    assert_eq!(
+        file.unlock(&pw, &anchors).err(),
+        Some(StoreError::Integrity)
+    );
+}
+
 #[test]
 fn tamper_pages_and_files_are_refused() {
     let good = vault_bytes();

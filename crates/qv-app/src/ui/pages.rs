@@ -742,7 +742,7 @@ fn Trash(controller: Controller, epoch: FormEpoch, revision: u64) -> Element {
         other => return rsx! { Unreadable { error: other.and_then(Result::err) } },
     };
     rsx! {
-        Head { controller: controller.clone(), epoch, title: "Trash", lead: "Items stay here until you delete them for good. A snapshot is taken first, so they can still be restored from Snapshots." }
+        Head { controller: controller.clone(), epoch, title: "Trash", lead: "Items stay here until you delete them for good. Deleting them for good also removes them from snapshots, unless you choose to keep them there." }
         if expiry.clock_anomaly { div { class: "banner", Svg { icon: Icon::Warn } span { "Vault dates are ahead of this device's clock; check it before deleting anything." } } }
         if items.is_empty() && page.is_some() {
             div { class: "empty empty-tall", div { div { class: "big", Svg { icon: Icon::Trash } } span { class: "muted", "The trash is empty." } } }
@@ -955,7 +955,8 @@ fn Snapshots(controller: Controller, epoch: FormEpoch, revision: u64) -> Element
         Box::new(act(&controller, epoch, WsAction::RestoreSnapshot(id)))
     };
     rsx! {
-        Head { controller: controller.clone(), epoch, title: "Snapshots", lead: "Taken automatically before risky changes. Restoring creates a new vault file and a new recovery baseline; this vault is not changed.", nested: true }
+        Head { controller: controller.clone(), epoch, title: "Snapshots", lead: "Past states of this vault, kept inside the vault file: at most one an hour while you make changes, and before merges. Each keeps only what has changed since. Restoring creates a new vault file and a new recovery baseline; this vault is not changed.", nested: true }
+        div { class: "banner", Svg { icon: Icon::Archive } span { "Snapshots live in the vault file, so they do not protect against losing it. Export an archive for a backup." } }
         if unreadable > 0 { div { class: "banner", Svg { icon: Icon::Warn } span { "{unreadable} snapshot file(s) could not be authenticated and were skipped." } } }
         if typed {
             Input { controller: controller.clone(), epoch, field: WsField::Path, label: if cfg!(target_os = "android") { "Name for the restored vault".to_owned() } else { "New vault file for the restore (full path)".to_owned() }, kind: Kind::Line, value: None, disabled: false }
@@ -965,7 +966,7 @@ fn Snapshots(controller: Controller, epoch: FormEpoch, revision: u64) -> Element
             for r in rows {
                 div { class: "set-row",
                     span { class: "si", Svg { icon: Icon::Clock } }
-                    span { class: "l", b { "{r.created}" } span { "{r.kind} · {r.size} bytes · {r.id}" } }
+                    span { class: "l", b { "{r.created}" } span { "{r.kind} · keeps {super::items::human_size(r.size)} · {r.id}" } }
                     button { class: "btn", onclick: restore(r.id.clone()), Svg { icon: Icon::Restore } "Restore…" }
                 }
             }

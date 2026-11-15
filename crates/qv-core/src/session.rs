@@ -423,12 +423,20 @@ impl Session {
     }
 
     /// Runs a mutation. The mutation checks for cancellation itself, before
-    /// its commit; after a commit the outcome is reported as it is.
+    /// its commit; after a commit the outcome is reported as it is. Its
+    /// commits keep the hourly ordinary snapshot when one is due (0007 §3.2,
+    /// plan 0059).
     pub(crate) fn mutate<T>(
         &self,
         f: impl FnOnce(&mut Ctx<'_>) -> Result<T, CoreError>,
     ) -> Result<T, CoreError> {
-        self.run(f)
+        self.run(|ctx| {
+            let now = ctx.now();
+            crate::snapshot::arm_automatic(ctx.open, now);
+            let result = f(ctx);
+            crate::snapshot::after_mutation(ctx.open);
+            result
+        })
     }
 
     fn run<T>(&self, f: impl FnOnce(&mut Ctx<'_>) -> Result<T, CoreError>) -> Result<T, CoreError> {
@@ -515,7 +523,8 @@ impl Session {
             if !ctx.open.read_only {
                 return Err(CoreError::NotAllowed);
             }
-            crate::snapshot::require_recovery(ctx)?;
+            let now = ctx.now();
+            crate::snapshot::arm_recovery(ctx.open, now);
             ctx.open.vault.adopt_baseline()?;
             ctx.open.read_only = false;
             // The adopted state is the new baseline (0005 §5.4).
@@ -712,8 +721,10 @@ mod tests {
         let d = s.new_group(root, "Work").unwrap();
         assert_eq!(err(s.save_group(d)), CoreError::Store(StoreError::NoAnchor));
         assert_eq!(seq(&s), 1);
-        assert_eq!(err(s.adopt_baseline()), CoreError::NotAllowed);
-        crate::testutil::destructive(&s, || s.adopt_baseline()).unwrap();
+        // Adoption needs no separate recovery copy (plan 0059): its commit
+        // changes no stored object, so it keeps no snapshot either.
+        s.adopt_baseline().unwrap();
+        assert!(s.snapshots().unwrap().snapshots.is_empty());
         assert!(!s.is_read_only().unwrap());
         assert_eq!(seq(&s), 2);
         let d = s.new_group(root, "Work").unwrap();
@@ -823,6 +834,8 @@ mod lock_tests {
         for point in [Point::BeforeCommit, Point::AfterCommit] {
             let env = Env::new();
             let s = Arc::new(env.unlock_with(Some(env.snapshot_policy())));
+            let copy = s.begin_destructive(false, None).unwrap();
+            s.finish_destructive(copy).unwrap();
             let id = s.snapshots().unwrap().snapshots[0].archive_id.clone();
             let path = env
                 .dir
@@ -881,6 +894,8 @@ mod lock_tests {
         for point in [Point::BeforeCommit, Point::AfterCommit] {
             let env = Env::new();
             let s = Arc::new(env.unlock_with(Some(env.snapshot_policy())));
+            let copy = s.begin_destructive(false, None).unwrap();
+            s.finish_destructive(copy).unwrap();
             let id = s.snapshots().unwrap().snapshots[0].archive_id.clone();
             let source = std::fs::read(&env.path).unwrap();
             let target = env.path.with_file_name("restored.qvault");
@@ -953,7 +968,7 @@ mod lock_tests {
             s.save_entry(s.edit_entry(e).unwrap()).unwrap();
             let before = seq(&s);
             let _copy = s.begin_destructive(false, None).unwrap();
-            let result = race(&s, point, move |s| s.purge_history(e));
+            let result = race(&s, point, move |s| s.purge_history(e, false));
             let durable = point == Point::AfterCommit;
             assert_eq!(
                 result,

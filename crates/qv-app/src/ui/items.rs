@@ -1015,7 +1015,7 @@ fn EntryScreen(
                             button { class: "shelf-tile add", id: "shelf-add", onclick: go(&controller, epoch, Screen::Attachments(entry)),
                                 span { class: "st-glyph", Svg { icon: Icon::Plus, large: true } }
                                 b { "Add a file" }
-                                small { "Up to 10 MiB" }
+                                small { "Up to 2 GiB" }
                             }
                         }
                     }
@@ -1171,7 +1171,7 @@ fn Attachments(
         div { class: "detail-inner fade-in",
             // Desktop has no phone bar: the item's sub-pages get a back link (plan 0054).
             button { class: "sub-back desk-only", onclick: back(&controller, epoch), Svg { icon: Icon::Back } "Back" }
-            div { class: "hero", span { class: "tile h1", Svg { icon: Icon::Attach, large: true } } div { h1 { "Attachments" } p { class: "muted", "Up to 10 MiB each. Names and types are shown as text; files are never opened." } } }
+            div { class: "hero", span { class: "tile h1", Svg { icon: Icon::Attach, large: true } } div { h1 { "Attachments" } p { class: "muted", "Up to 2 GiB each. Names and types are shown as text; files are never opened." } } }
             div { class: "card",
                 if rows.is_empty() { div { class: "set-row", span { class: "l", span { "No attachments yet." } } } }
                 for a in rows {
@@ -1193,14 +1193,7 @@ fn Attachments(
         }
     }
 }
-/// A size for people: bytes, KB or MB.
-pub(crate) fn human_size(n: u64) -> String {
-    match n {
-        0..1_000 => format!("{n} bytes"),
-        1_000..1_000_000 => format!("{:.0} KB", n as f64 / 1_000.0),
-        _ => format!("{:.1} MB", n as f64 / 1_000_000.0),
-    }
-}
+pub(crate) use crate::views::human_size;
 /// The shelf's colour family for a file, from its untrusted name and type
 /// (decoration only; previews never trust these).
 fn file_tone(name: &str, mime: &str) -> &'static str {
@@ -1438,9 +1431,9 @@ pub(crate) fn Viewer(
                             b { class: "v-track", "{p.name.as_str()}" }
                             div { class: "v-player",
                                 // WebKitGTK buffers playing HTTP media to /var/tmp, so on
-                                // Linux player.js plays it from memory (plan 0057).
+                                // Linux player.js plays it from memory (plans 0057, 0059).
                                 if cfg!(target_os = "linux") {
-                                    audio { "data-qv-src": "{src.as_str()}", "data-qv-type": p.mime, preload: "auto" }
+                                    audio { "data-qv-src": "{src.as_str()}", "data-qv-type": p.mime, "data-qv-size": "{p.size}", preload: "auto" }
                                 } else {
                                     audio { src: "{src.as_str()}", preload: "metadata" }
                                 }
@@ -1452,7 +1445,7 @@ pub(crate) fn Viewer(
                         div { class: "v-video", onclick: |e: MouseEvent| e.stop_propagation(),
                             div { class: "v-player",
                                 if cfg!(target_os = "linux") {
-                                    video { "data-qv-src": "{src.as_str()}", "data-qv-type": p.mime, preload: "auto", "playsinline": "true" }
+                                    video { "data-qv-src": "{src.as_str()}", "data-qv-type": p.mime, "data-qv-size": "{p.size}", preload: "auto", "playsinline": "true" }
                                 } else {
                                     video { src: "{src.as_str()}", preload: "auto", "playsinline": "true" }
                                 }

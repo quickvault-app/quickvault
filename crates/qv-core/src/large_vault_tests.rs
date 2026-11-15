@@ -237,13 +237,10 @@ fn large_vault_stock_budget_opens_edits_searches_restores_merges_and_rotates() {
     let report = session.export_archive(dir.path(), false, None).unwrap();
     assert_eq!(report.completion_error, None);
     let archive = dir.path().join(format!("{}.qvsnap", report.archive_id));
-    assert!(
-        session
-            .merge_archive(&archive, false, None)
-            .unwrap()
-            .accepted
-    );
+    assert!(session.merge_archive(&archive, None).unwrap().accepted);
     assert_eq!(session.overview().unwrap().entries, ROWS);
+    let copy = session.begin_destructive(true, None).unwrap();
+    session.finish_destructive(copy).unwrap();
     let snapshot = session.snapshots().unwrap().snapshots.remove(0);
     let restored = env.dir.path().join("restored.qvault");
     session

@@ -116,9 +116,13 @@ fn exchange_file_password_guessing_a_snapshot_does_not_open_with_the_password() 
     let h = Home::new();
     let s = h.create();
     drop(s);
-    // The first CLI unlock takes the first-of-day ordinary snapshot.
-    let o = run(&h, &["snapshot", "ls"]);
-    assert_eq!(o.code, 0, "{}", o.stderr);
+    // A snapshot file (a rotation's recovery copy; ordinary snapshots live
+    // inside the vault since plan 0059).
+    {
+        let s = h.unlock_with_snapshots();
+        let copy = s.begin_destructive(false, None).unwrap();
+        s.finish_destructive(copy).unwrap();
+    }
     let snapshot = std::fs::read_dir(h.snapshots())
         .unwrap()
         .map(|e| e.unwrap().path())

@@ -9,6 +9,34 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Changed
 
+- 2026-11-15: Much larger vaults and files (owner request, plan 0059): one
+  attachment can be up to 2 GiB (was 10 MiB) and a vault can hold up to
+  8 GiB of data (was 1 GiB). Attachment chunks are counted apart from the
+  250,000 record versions, the vault file may reach 16 GiB, and LAN sync
+  accepts the larger totals. Attaching a file over 256 MiB asks first, and a
+  LAN sync that receives over 256 MiB shows its size and progress.
+- 2026-11-15: Snapshots now live inside the vault and share its data
+  (plan 0059). A snapshot keeps only the vault's past manifest and whatever
+  has changed since, instead of a full copy of the vault; at most one is
+  taken per hour while you make changes (none when nothing changed, none on
+  a read), plus one before archive merges and other automatic merges.
+  Budgets are 48 snapshots, 30 days and 1 GiB of snapshot-only data.
+  Snapshots no longer protect against losing the vault file itself, so an
+  exported archive is the backup. Snapshot files written before stay listed
+  and restorable until they age out. Vault files are upgraded to schema
+  `0x7FFF0005` by their first commit that keeps a snapshot; update every
+  device, because older builds refuse an upgraded file.
+- 2026-11-15: Emptying the trash, deleting permanently, removing an
+  attachment and purging history no longer copy the whole vault first (the
+  trash is the safety net). They also delete the snapshots that still hold
+  the deleted data, unless you choose "Keep in snapshots" (CLI
+  `--keep-snapshots`); the confirmation says how many there are. `qv merge`
+  loses `--allow-over-budget`, and accepting a recovery baseline no longer
+  asks about snapshot space.
+- 2026-11-15: On Linux, MP4 previews stream from the vault in pieces around
+  the playback position instead of loading the whole file, so large videos
+  use bounded memory. Other audio and video over 256 MiB is not previewed on
+  Linux (save a copy instead).
 - 2026-11-14: The optional remote server (roadmap milestone 4) is not
   planned (owner decision). Its phases, specs 0005 §3/§5.2–5.6 and 0006 and
   the remote 0012 rows stay as Draft design records; 1.0 is the offline

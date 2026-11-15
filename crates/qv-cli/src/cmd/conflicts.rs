@@ -508,20 +508,10 @@ fn resolve_in(ctx: &Ctx, args: &ArgMatches, s: &Session) -> Result<(), CliError>
     } else {
         None
     };
+    // A resolution that installs a final deletion keeps the pre-resolution
+    // state as a recovery snapshot inside the vault (0007 §3.2).
     let cancel = crate::signals::token();
-    let copy = if v.state == Deletion::Final {
-        Some(super::trash::recovery_copy(ctx, s, Some(&cancel))?)
-    } else {
-        None
-    };
-    let result = s.resolve_version(h, password.as_ref(), Some(&cancel));
-    let finished = copy.map(|copy| s.finish_destructive(copy));
-    let result = result?;
-    if matches!(finished, Some(Err(_))) {
-        crate::out::eprint(
-            "qv: resolution committed; its recovery snapshot remains on disk pending reclassification\n",
-        );
-    }
+    let result = s.resolve_version(h, password.as_ref(), Some(&cancel))?;
     let mut out = Out::stdout();
     out.raw("local resolution: committed\n")
         .raw(&format!("conflicts: {}\n", result.conflicts));

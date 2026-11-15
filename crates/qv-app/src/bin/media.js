@@ -16,8 +16,8 @@ const press=(media,selector)=>{const control=media.closest(".v-player").querySel
 const playing=media=>media.closest(".v-player").getAttribute("data-state")==="playing";
 // A running clock does not establish that the decoder presents frames. Count
 // new presented frames near the start, before the next keyframe at 8.33 s.
-const moving=async media=>{
- await wait(()=>!media.paused&&media.currentTime>0.1&&media.currentTime<4);
+const moving=async(media,from=0.1,to=4)=>{
+ await wait(()=>!media.paused&&media.currentTime>from&&media.currentTime<to);
  const start=media.currentTime;let frames=0,callback=0,last=-1;
  const frame=(_now,meta)=>{if(meta.mediaTime>last){last=meta.mediaTime;frames++;}callback=media.requestVideoFrameCallback(frame);};
  const presented=()=>{const q=media.getVideoPlaybackQuality();return q.totalVideoFrames-q.droppedVideoFrames;};
@@ -35,7 +35,7 @@ const moving=async media=>{
   sample();const shown=frames||rendered;
   const result=document.getElementById("validation-result");
   if(result){result.value="MEDIA-FRAMES:"+[frames,rendered,resets,Math.round(start*1000),Math.round(media.currentTime*1000)].join(",");result.dispatchEvent(new Event("input",{bubbles:true}));}
-  if(shown<6||media.currentTime<=start+0.5||media.currentTime>=4)throw new Error("video frames stalled");
+  if(shown<6||media.currentTime<=start+0.5||media.currentTime>=to)throw new Error("video frames stalled");
  }finally{clearInterval(sampling);if(callback)media.cancelVideoFrameCallback(callback);}
 };
 // Check the frame chosen by a paused seek, including a seek after EOS. The
@@ -74,6 +74,8 @@ try{
  await ready(video);if(blobbed!==video.src.startsWith("blob:"))throw new Error("media source");
  // An MP4 plays through Media Source Extensions, not WebKit's blob playback.
  if(blobbed&&video.getAttribute("data-qv-playback")!=="stream")throw new Error("media stream");
+ // It streams in ranges around the playback position, never whole (plan 0059).
+ if(blobbed&&!video.hasAttribute("data-qv-ranges"))throw new Error("media ranges");
  // The first frame is ready before play, and the player fills the stage (plan 0057).
  await wait(()=>video.readyState>=2&&video.videoWidth===128);
  if(!video.paused||video.currentTime!==0||video.clientWidth<=300)throw new Error("video idle");
@@ -124,6 +126,17 @@ try{
  backdrop.dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true,detail:1}));
  mark(76);await wait(()=>reset(sparse));mark(77);await new Promise(r=>setTimeout(r,300));
  if(!reset(sparse))throw new Error("late replay after close");
+ // A long clip streams around the playback position (plan 0059): about 30 s
+ // ahead is buffered, a seek far ahead restarts there with moving frames,
+ // and what lies far behind is dropped.
+ mark(90);await open("f-long.mp4");await wait(()=>!!document.querySelector(".viewer video"));
+ const long=document.querySelector(".viewer video");lastMedia=long;await ready(long);long.muted=true;
+ const ahead=()=>long.buffered.length?long.buffered.end(long.buffered.length-1):0;
+ if(blobbed){await wait(()=>ahead()>=20);if(ahead()>45)throw new Error("buffered too far ahead");}
+ press(long,".v-play");await moving(long,0.1,10);
+ mark(91);long.currentTime=70;await wait(()=>!long.seeking);mark(93);await moving(long,70,80);
+ if(blobbed&&(!long.buffered.length||long.buffered.start(0)<60))throw new Error("stale data kept");
+ mark(92);await tap("viewer-close");await wait(()=>reset(long));
  mark(8);await open("c-image.png");await wait(()=>!!document.querySelector(".viewer img"));
  await wait(()=>document.querySelector(".viewer img").naturalWidth===64);
  await tap("viewer-close");await wait(()=>!document.querySelector(".viewer"));
@@ -139,7 +152,7 @@ try{
  passed=true;
 }catch{
  const result=document.getElementById("validation-result");
- if(result&&lastMedia){result.value="MEDIA-FACTS:"+[Number(lastMedia.paused),Number(lastMedia.hasAttribute("src")),lastMedia.readyState,lastMedia.networkState,Number(!lastMedia.currentSrc),Number(lastMedia.isConnected)].join(",");result.dispatchEvent(new Event("input",{bubbles:true}));}
+ if(result&&lastMedia){const b=lastMedia.buffered,ms=t=>Math.round(t*1000);result.value="MEDIA-FACTS:"+[Number(lastMedia.paused),Number(lastMedia.hasAttribute("src")),lastMedia.readyState,lastMedia.networkState,Number(!lastMedia.currentSrc),Number(lastMedia.isConnected),Number(lastMedia.seeking),ms(lastMedia.currentTime),b.length,b.length?ms(b.start(0)):0,b.length?ms(b.end(b.length-1)):0].join(",");result.dispatchEvent(new Event("input",{bubbles:true}));}
  /* Fixed numeric facts only; media URLs and platform messages stay out of logs. */
 }
 finally{

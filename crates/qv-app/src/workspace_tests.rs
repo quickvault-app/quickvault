@@ -6,7 +6,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use crate::controller::{Action, AppError, Controller, FormEpoch, InputField, Phase, private_dir};
 use crate::views;
-use crate::workspace::{ConfirmKind, CopyKey, Pane, Report, RevealKey, Screen, WsAction, WsField};
+use crate::workspace::{
+    ConfirmKind, CopyKey, Pane, Report, RevealKey, Screen, Workspace, WsAction, WsField,
+};
 use qv_core::platform::autofill;
 use qv_core::platform::*;
 use qv_core::{FieldKind, SecretBytes};
@@ -510,45 +512,37 @@ fn edit_bounds_blank_replacement_protection_fields_and_groups() {
 
 // 0012 §1: Snapshot disk growth
 #[test]
-fn trash_empty_needs_confirmation_snapshot_and_over_budget_consent() {
+fn trash_empty_needs_confirmation_names_snapshots_and_keeps_them_on_request() {
     let _k = KDF.lock().unwrap_or_else(|p| p.into_inner());
     let env = Env::unlocked();
     let e = env.add_entry("Old", SECRET);
     env.act(WsAction::Delete(qv_core::ItemHandle::Entry(e)));
     env.c.navigate(env.epoch(), Screen::Trash);
+    // No recovery copy is taken (plan 0059); the confirmation names how many
+    // snapshots hold the items (none here: the vault's one snapshot is older).
     env.act(WsAction::EmptyTrash);
-    assert_eq!(env.c.pending(env.epoch()), Some(ConfirmKind::EmptyTrash));
+    assert_eq!(env.c.pending(env.epoch()), Some(ConfirmKind::EmptyTrash(0)));
     env.act(WsAction::Answer(false));
     assert_eq!(env.read(views::trash).items.len(), 1);
     env.act(WsAction::EmptyTrash);
+    // The keep choice belongs to the pending question and is taken once.
+    env.act(WsAction::KeepSnapshots(true));
+    assert!(env.c.peek(env.epoch(), Workspace::pending_keep).unwrap());
     env.act(WsAction::Answer(true));
     assert_eq!(env.report(), Some(Report::Purged { purged: 1, kept: 0 }));
     assert!(env.read(views::trash).items.is_empty());
+    assert!(!env.c.peek(env.epoch(), |ws| ws.keep_snapshots).unwrap());
+    // The first change of the session kept a snapshot inside the vault.
     assert!(!env.read(views::snapshots).0.is_empty());
-    // A budget refusal asks once; refusal changes nothing, consent retries
-    // the same action with the over-budget permission.
+    // An unanswered keep choice never reaches a later deletion.
     let e = env.add_entry("Again", SECRET);
     env.act(WsAction::Delete(qv_core::ItemHandle::Entry(e)));
     env.c.navigate(env.epoch(), Screen::Trash);
-    env.c
-        .run_op(env.epoch(), Some(WsAction::EmptyTrash), |_, _, _| {
-            Err(AppError::Core(qv_core::CoreError::SnapshotOverBudget {
-                needed: 5,
-            }))
-        })
-        .unwrap();
-    env.wait();
-    assert_eq!(env.c.pending(env.epoch()), Some(ConfirmKind::OverBudget(5)));
+    env.act(WsAction::EmptyTrash);
+    env.act(WsAction::KeepSnapshots(true));
     env.act(WsAction::Answer(false));
-    assert_eq!(env.read(views::trash).items.len(), 1);
-    env.c
-        .run_op(env.epoch(), Some(WsAction::EmptyTrash), |_, _, _| {
-            Err(AppError::Core(qv_core::CoreError::SnapshotOverBudget {
-                needed: 5,
-            }))
-        })
-        .unwrap();
-    env.wait();
+    env.act(WsAction::EmptyTrash);
+    assert!(!env.c.peek(env.epoch(), Workspace::pending_keep).unwrap());
     env.act(WsAction::Answer(true));
     assert_eq!(env.report(), Some(Report::Purged { purged: 1, kept: 0 }));
 }
@@ -589,10 +583,19 @@ fn records_history_snapshot_restore_archive_merge_conflict_resolve_verify() {
     env.act(WsAction::RestoreHistory(e, rows[0].version.clone(), false));
     assert_eq!(&*env.read(|s| views::entry(s, e)).title, "Shared");
     env.act(WsAction::PurgeHistory(e));
-    assert_eq!(env.c.pending(env.epoch()), Some(ConfirmKind::PurgeHistory));
+    assert_eq!(
+        env.c.pending(env.epoch()),
+        Some(ConfirmKind::PurgeHistory(0))
+    );
     env.act(WsAction::Answer(true));
     assert!(env.notice().unwrap().contains("suppressed"));
-    // Snapshot restore into a branch, diverge, export there, merge here.
+    // Snapshot restore into a branch, diverge, export there, merge here. A
+    // file copy holds this exact state (the vault's own snapshots hold the
+    // states before its commits, plan 0059).
+    env.read(|s| {
+        let copy = s.begin_destructive(false, None)?;
+        s.finish_destructive(copy)
+    });
     env.c.lock();
     env.unlock(PASSWORD);
     let (snaps, _) = env.read(views::snapshots);
@@ -1449,7 +1452,7 @@ fn shortcuts_run_only_existing_actions_and_escape_never_confirms() {
     env.act(WsAction::Delete(qv_core::ItemHandle::Entry(e)));
     env.c.navigate(env.epoch(), Screen::Trash);
     env.act(WsAction::EmptyTrash);
-    assert_eq!(env.c.pending(env.epoch()), Some(ConfirmKind::EmptyTrash));
+    assert_eq!(env.c.pending(env.epoch()), Some(ConfirmKind::EmptyTrash(0)));
     assert!(env.c.shortcut(env.epoch(), Shortcut::Escape));
     env.wait();
     assert_eq!(env.c.pending(env.epoch()), None);

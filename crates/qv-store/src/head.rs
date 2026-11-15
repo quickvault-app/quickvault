@@ -4,7 +4,7 @@
 //!
 //! Every commit writes one head: `{ vault_id, key_generation, local_seq,
 //! previous_digest, manifest_hash, remote_checkpoint_id?, remote_sequence?,
-//! archive_receipts_digest, lan_links_digest }`,
+//! archive_receipts_digest, lan_links_digest, snapshot_index_digest? }`,
 //! MAC'd under the `local-state` purpose key. Body (canonical CBOR map;
 //! unknown keys fail closed). Development values, volatile until the pre-1.0 freeze:
 //!
@@ -19,6 +19,7 @@
 //! | 6 | remote_sequence | uint, present iff key 5 is |
 //! | 7 | archive_receipts_digest | bstr 32, mandatory (0004 §2.3) |
 //! | 8 | lan_links_digest | bstr 32, mandatory (0013 §9.1, 0004 §2.4) |
+//! | 9 | snapshot_index_digest | bstr 32; present iff the file has schema `0x7FFF0005` (0004 §2.5, plan 0059) |
 //!
 //! MAC: MAC/1 over `["qv/local-head/v1", body]`. `local_digest` is SHA-256
 //! of the canonical `[body, mac]`.
@@ -79,6 +80,9 @@ pub(crate) struct LocalHead {
     pub(crate) remote: Option<([u8; 32], u64)>,
     pub(crate) archive_receipts_digest: [u8; 32],
     pub(crate) lan_links_digest: [u8; 32],
+    /// The sealed snapshot index the head names; `None` for a file of the
+    /// schema before `snapshot_index` (plan 0059).
+    pub(crate) snapshot_index_digest: Option<[u8; 32]>,
 }
 
 fn malformed<E>(_: E) -> StoreError {
@@ -134,6 +138,12 @@ impl LocalHead {
                 e.bytes(&self.lan_links_digest);
                 Ok(())
             })?;
+            if let Some(digest) = &self.snapshot_index_digest {
+                m.entry(9, |e| {
+                    e.bytes(digest);
+                    Ok(())
+                })?;
+            }
             Ok(())
         })
         .map_err(|_| StoreError::Internal)?;
@@ -149,6 +159,7 @@ impl LocalHead {
         let (mut vault_id, mut generation, mut seq, mut previous, mut manifest) =
             (None, None, None, None, None);
         let (mut checkpoint, mut remote_seq, mut receipts, mut links) = (None, None, None, None);
+        let mut snapshots = None;
         for _ in 0..d.map().map_err(malformed)? {
             match d.int().map_err(malformed)? {
                 0 => {
@@ -167,6 +178,7 @@ impl LocalHead {
                 6 => remote_seq = Some(d.uint().map_err(malformed)?),
                 7 => receipts = Some(digest32(&mut d)?),
                 8 => links = Some(digest32(&mut d)?),
+                9 => snapshots = Some(digest32(&mut d)?),
                 _ => return Err(StoreError::Unsupported),
             }
         }
@@ -193,6 +205,7 @@ impl LocalHead {
             remote,
             archive_receipts_digest: receipts.ok_or(StoreError::Integrity)?,
             lan_links_digest: links.ok_or(StoreError::Integrity)?,
+            snapshot_index_digest: snapshots,
         })
     }
 }
@@ -282,6 +295,7 @@ mod tests {
             remote: None,
             archive_receipts_digest: [0xab; 32],
             lan_links_digest: [0xcd; 32],
+            snapshot_index_digest: Some([0xef; 32]),
         }
     }
 
@@ -298,7 +312,7 @@ mod tests {
     fn head_round_trip_and_golden() {
         let h = head(1);
         let body = h.encode().unwrap();
-        let mut expected = vec![0xa6, 0x00, 0x50];
+        let mut expected = vec![0xa7, 0x00, 0x50];
         expected.extend_from_slice(&v4(1));
         expected.extend_from_slice(&[0x01, 0x01, 0x02, 0x01, 0x04, 0x58, 0x20]);
         expected.extend_from_slice(&[0xee; 32]);
@@ -306,7 +320,13 @@ mod tests {
         expected.extend_from_slice(&[0xab; 32]);
         expected.extend_from_slice(&[0x08, 0x58, 0x20]);
         expected.extend_from_slice(&[0xcd; 32]);
+        expected.extend_from_slice(&[0x09, 0x58, 0x20]);
+        expected.extend_from_slice(&[0xef; 32]);
         assert_eq!(body, expected);
+        // A head of the earlier schema has no key 9.
+        let mut old = head(3);
+        old.snapshot_index_digest = None;
+        assert_eq!(LocalHead::decode(&old.encode().unwrap()).unwrap(), old);
         assert_eq!(LocalHead::decode(&body).unwrap(), h);
         let mut r = head(7);
         r.remote = Some(([5; 32], 9));
@@ -390,7 +410,7 @@ mod tests {
         );
         // Unknown key; missing manifest hash; oversized.
         let mut unknown = base.clone();
-        unknown.push((9, &one));
+        unknown.push((10, &one));
         assert_eq!(
             LocalHead::decode(&raw(&unknown)).err(),
             Some(StoreError::Unsupported)

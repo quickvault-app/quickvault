@@ -38,6 +38,27 @@ mod transport;
 mod window;
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Bytes received from the peer in the current round and the total it was
+/// asked for (plan 0059: progress for large syncs). Process-wide counters of
+/// public sizes only; the app runs one LAN operation at a time.
+static RECEIVED: AtomicU64 = AtomicU64::new(0);
+static EXPECTED: AtomicU64 = AtomicU64::new(0);
+
+/// `(received, expected)` ciphertext bytes of the round being received; both
+/// zero when none is.
+pub fn receive_progress() -> (u64, u64) {
+    (
+        RECEIVED.load(Ordering::Relaxed),
+        EXPECTED.load(Ordering::Relaxed),
+    )
+}
+
+fn set_progress((received, expected): (u64, u64)) {
+    RECEIVED.store(received, Ordering::Relaxed);
+    EXPECTED.store(expected, Ordering::Relaxed);
+}
 use std::time::Duration;
 
 use qv_protocol::registry::ErrorCode;

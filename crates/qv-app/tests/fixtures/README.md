@@ -3,7 +3,7 @@
 Generated locally with FFmpeg 9.0.2 for plan0050; no user content. These files
 are embedded only in the `validation` feature, then imported through real core
 attachment encryption. Builds consume the checked-in bytes and need no FFmpeg.
-The 8 MiB silent WAV is generated as a bounded reader at runtime, within the existing10 MiB per-file limit.
+The 8 MiB silent WAV is generated as a bounded reader at runtime, within the per-file limit.
 
 - `preview.mp4`: four seconds of `testsrc=size=128x96:rate=12`, H.264/yuv420p,
   plus `sine=frequency=440:sample_rate=22050` at 1% amplitude, AAC, faststart,
@@ -18,6 +18,12 @@ The 8 MiB silent WAV is generated as a bounded reader at runtime, within the exi
   After EOS, slider selections at 1 s and 0 must show the selected frame while
   paused and resume with moving frames when Play is pressed.
   SHA-256: `acefcfa07f56225cb15fd290280e244d5f95f162b95aa366e9dc3dae7441a4f7`.
+- `preview-long.mp4`: 100 seconds of moving `testsrc2` at 64×48, 10 fps,
+  H.264/yuv420p with B-frames and a keyframe every 2 seconds, AAC at 1%
+  amplitude, index at the end (plan 0059). The native test checks that the
+  Linux player buffers only about 30 seconds ahead, that a seek to 70 s shows
+  moving frames, and that data far behind the new position is dropped.
+  SHA-256: `b83269d3e7ce9d4930225822c3ff4378f62938610b38eed2f5573398f23a5881`.
 - `preview.png`: one blue 64×32 RGB PNG.
   SHA-256: `86784280e71c3efcebfce00ccca654157d2d5b02778cc07daad8b7dd9d6eef5a`.
 - `large-preview.png`: one black 5000×4000 RGB PNG; its RGBA lower bound is
@@ -27,6 +33,15 @@ The 8 MiB silent WAV is generated as a bounded reader at runtime, within the exi
 Generation uses FFmpeg's `lavfi` sources, `-map_metadata -1`, and `-threads 1`.
 The MP4 uses `-t 4 -c:v libx264 -g 12 -pix_fmt yuv420p -c:a aac -af volume=0.01
 -movflags +faststart`; PNG sources use `color` and `-frames:v 1`.
+
+The 100-second fixture was generated with FFmpeg 9.0.2:
+
+```sh
+ffmpeg -f lavfi -i testsrc2=size=64x48:rate=10 \
+  -f lavfi -i sine=frequency=440:sample_rate=22050 -t 100 \
+  -c:v libx264 -threads 1 -g 20 -keyint_min 20 -sc_threshold 0 -bf 2 \
+  -pix_fmt yuv420p -c:a aac -b:a 16k -af volume=0.01 -map_metadata -1 preview-long.mp4
+```
 
 The long-GOP fixture was generated with FFmpeg 9.0.2:
 

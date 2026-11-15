@@ -110,24 +110,6 @@ pub(crate) fn show(ctx: &Ctx) -> Result<(), CliError> {
     Ok(())
 }
 
-fn recovery_copy(
-    s: &Session,
-    tty: &Tty<'_>,
-    cancel: &CancelToken,
-) -> Result<qv_core::RecoverySnapshot, CliError> {
-    match s.begin_destructive(false, Some(cancel)) {
-        Ok(copy) => Ok(copy),
-        Err(CoreError::SnapshotOverBudget { needed }) => {
-            tty.say(&format!("A mandatory recovery snapshot needs {needed} bytes and exceeds ordinary snapshot budgets.\n"))?;
-            if !tty.confirm("Allow this necessary recovery copy to exceed the ordinary budget?")? {
-                return Err(CliError::from(CoreError::SnapshotOverBudget { needed }));
-            }
-            Ok(s.begin_destructive(true, Some(cancel))?)
-        }
-        Err(e) => Err(e.into()),
-    }
-}
-
 pub(crate) fn recover(ctx: &Ctx, args: &ArgMatches) -> Result<(), CliError> {
     let tty = password_tty(ctx)?;
     let path = args
@@ -145,7 +127,7 @@ pub(crate) fn recover(ctx: &Ctx, args: &ArgMatches) -> Result<(), CliError> {
         crate::out::eprint("qv: local snapshots are unavailable.\n");
     }
     let new = crate::cmd::init::choose_password(&tty)?;
-    let recovery = if s.is_read_only()? {
+    if s.is_read_only()? {
         tty.say("The vault's external rollback record is missing, mismatched or damaged. The vault has been authenticated for read-only inspection. Accepting this file establishes a new local recovery baseline and does not prove it is the latest global state. Preserve the original files before proceeding.\n")?;
         if !tty.confirm("Accept this file as the new local recovery baseline?")? {
             return Err(CliError::new(
@@ -153,26 +135,16 @@ pub(crate) fn recover(ctx: &Ctx, args: &ArgMatches) -> Result<(), CliError> {
                 "recovery baseline was declined; nothing changed",
             ));
         }
-        let copy = recovery_copy(&s, &tty, &cancel)?;
         crate::signals::check()?;
         s.adopt_baseline()?;
-        Some(copy)
-    } else {
-        None
-    };
+    }
     let ids = old_snapshots(&s)?;
     crate::signals::check()?;
     s.change_password(&new, Some(&cancel))
         .map_err(changed_error)?;
     drop(new);
     tty.say("Vault recovered and master password changed. Old slots and copies still enable access to this key generation.\n")?;
-    if let Some(copy) = recovery
-        && s.finish_destructive(copy).is_err()
-    {
-        crate::out::eprint(
-            "qv: the password reset committed, but its recovery snapshot could not be reclassified; it remains on disk.\n",
-        );
-    }
+
     offer_snapshots(&tty, &s, &ids)?;
     s.lock();
     Ok(())

@@ -3,23 +3,28 @@
 //! Local snapshots and the full `verify` report (spec 0007 §3; 0011
 //! *Snapshots and verification*).
 //!
-//! A snapshot is an archive (0004 §6, written by `qv-store` from verified
-//! objects). This module owns the **policy** around them:
+//! Since plan 0059 an ordinary local snapshot is a manifest the vault keeps
+//! after a commit replaces it (0004 §2.5, `qv-store`). This module owns the
+//! **policy** around them:
 //!
-//! - **Automatic ordinary snapshots** (0007 §3.2): on unlock, at most one
-//!   ordinary snapshot per hour, plus one on the first unlock of a local
-//!   day. The decision reads only authenticated archive headers of this
-//!   vault ID and key generation: there is no marker row, no settings write
-//!   and no vault commit on a read command. A snapshot failure or budget
-//!   skip is reported through [`Session::snapshot_status`] so the frontend
-//!   can warn; it never fails the requested command.
-//! - **Budgets** (0007 §3.3): 30 days, 48 ordinary snapshots and 512 MiB per
-//!   vault. Pruning removes the oldest ordinary snapshots first and never a
-//!   copy pinned by an in-progress destructive operation. A `recover-` file
-//!   left by a crash is reclassified as ordinary before it can be pruned.
-//! - **Mandatory recovery snapshots** (0007 §3.2): [`Session::begin_destructive`]
-//!   writes and verifies one before a destructive operation, pinning it until
-//!   [`Session::finish_destructive`] (or the dropped handle) releases it.
+//! - **Automatic ordinary snapshots** (0007 §3.2): every mutation arms the
+//!   store when one is due (none yet, the newest over an hour old, or none
+//!   from today), so its first commit keeps the replaced manifest. Read
+//!   commands write nothing. A snapshot skipped for space is reported through
+//!   [`Session::snapshot_status`]; it never fails the requested command.
+//! - **Recovery snapshots** (0007 §3.2): archive merges, baseline adoption and
+//!   a conflict resolution that installs a final deletion arm a recovery
+//!   snapshot for their own commit. Explicit deletions take none; unless the
+//!   caller keeps them, they remove the snapshots holding the deleted data
+//!   ([`Session::snapshots_holding`]).
+//! - **Budgets** (0007 §3.3): 30 days, 48 snapshots and 1 GiB of
+//!   snapshot-only data per vault, pruned oldest first inside the commit.
+//! - **Snapshot files**: a VK rotation still writes its recovery copy as an
+//!   archive file ([`Session::begin_destructive`], pinned until
+//!   [`Session::finish_destructive`]); files written before plan 0059 stay
+//!   listable and restorable, and the unlock pass ages them out by count,
+//!   bytes and age. A `recover-` file left by a crash is reclassified as
+//!   ordinary before it can be pruned.
 //! - **`verify`** (0004 §3.6, 0011 §4): one read-only full pass, with the
 //!   unlock-time anchor comparison and fixed notes.
 //!
@@ -44,9 +49,9 @@ use crate::session::{CancelToken, Open, Session};
 /// Ordinary snapshots kept per vault (0007 §3.3, development value).
 pub const DEFAULT_MAX_COUNT: u32 = 48;
 
-/// Aggregate byte budget for ordinary snapshots (0007 §3.3, development
-/// value: 512 MiB).
-pub const DEFAULT_MAX_BYTES: u64 = 512 * 1024 * 1024;
+/// Byte budget for snapshot-only data: kept manifests other than the live
+/// one, and objects only snapshots reference (0007 §3.3, plan 0059: 1 GiB).
+pub const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Maximum age of an ordinary snapshot (0007 §3.3, development value: 30
 /// days).
@@ -86,6 +91,90 @@ impl SnapshotPolicy {
     pub fn default_dir() -> Result<Self, StoreError> {
         let dir = SnapshotDir::default_dir()?;
         Ok(Self::new(SnapshotDir::open(&dir)?))
+    }
+
+    /// The budgets the vault's own snapshots are pruned to (plan 0059).
+    pub(crate) fn budgets(&self) -> qv_store::SnapshotBudgets {
+        qv_store::SnapshotBudgets {
+            max_count: self.max_count,
+            max_bytes: self.max_bytes,
+            max_age_ms: self.max_age_seconds.saturating_mul(MILLIS_PER_SECOND),
+        }
+    }
+}
+
+/// The default budgets, for a recovery snapshot without a configured policy.
+fn default_budgets() -> qv_store::SnapshotBudgets {
+    qv_store::SnapshotBudgets {
+        max_count: DEFAULT_MAX_COUNT,
+        max_bytes: DEFAULT_MAX_BYTES,
+        max_age_ms: DEFAULT_MAX_AGE_SECONDS.saturating_mul(MILLIS_PER_SECOND),
+    }
+}
+
+/// Whether an ordinary snapshot is due (0007 §3.2): none yet, the newest is
+/// over an hour old, or none is from today (UTC).
+fn due(rows: &[qv_store::SnapshotRow], now: Timestamp) -> bool {
+    let newest = rows
+        .iter()
+        .filter(|r| r.kind == SnapshotKind::Ordinary)
+        .map(|r| r.created_at)
+        .max();
+    newest.is_none_or(|t| {
+        now.0.saturating_sub(t.0) >= SNAPSHOT_INTERVAL_SECONDS * MILLIS_PER_SECOND
+            || day_of(t.0) != day_of(now.0)
+    })
+}
+
+/// Before a mutation: arm the hourly ordinary snapshot when one is due and a
+/// policy is configured (plan 0059). Read-only sessions keep none.
+pub(crate) fn arm_automatic(open: &mut Open, now: Timestamp) {
+    let armed = match &open.snapshots {
+        Some(policy) if !open.read_only && due(open.vault.snapshot_rows(), now) => {
+            Some((SnapshotKind::Ordinary, now, policy.budgets()))
+        }
+        _ => None,
+    };
+    open.vault.arm_snapshot(armed);
+}
+
+/// Inside an operation that changes what the vault holds without the user
+/// choosing it (0007 §3.2): its commit keeps the pre-operation state as a
+/// recovery snapshot, whatever the hourly rule says.
+pub(crate) fn arm_recovery(open: &mut Open, now: Timestamp) {
+    let budgets = open
+        .snapshots
+        .as_ref()
+        .map_or_else(default_budgets, |p| p.budgets());
+    open.vault
+        .arm_snapshot(Some((SnapshotKind::Recovery, now, budgets)));
+}
+
+/// After a mutation: disarm, and report what its commits did.
+pub(crate) fn after_mutation(open: &mut Open) {
+    open.vault.arm_snapshot(None);
+    if let Some(outcome) = open.vault.take_snapshot_outcome() {
+        open.auto_snapshot = Some(SnapshotReport {
+            published: outcome.kept.map(|row| SnapshotSummary {
+                archive_id: row.id_hex(),
+                created_at: row.created_at,
+                kind: row.kind,
+                size: 0,
+                objects: 0,
+                total_bytes: 0,
+            }),
+            pruned: outcome
+                .removed
+                .iter()
+                .map(qv_store::SnapshotRow::id_hex)
+                .collect(),
+            skipped: outcome
+                .skipped_for_space
+                .then_some(SnapshotSkip::OverBudget {
+                    needed: outcome.needed,
+                }),
+            failed: false,
+        });
     }
 }
 
@@ -268,16 +357,13 @@ pub struct RecoverySnapshot {
     entry: SnapshotEntry,
 }
 
-/// Private authorization. Its containing Arc binds it to this exact session;
-/// sequence/generation bind it to one pre-mutation state, and the leased entry
-/// keeps the completed recovery copy protected until the handle is released.
+/// The pinned copy of a VK rotation in progress (plan 0059: the only
+/// operation that still writes a recovery file). Its containing Arc binds it
+/// to this exact session; the handle's leased entry keeps the file protected
+/// until the handle is released.
 #[derive(Clone)]
 pub(crate) struct RecoveryPin {
     pub(crate) archive_id: String,
-    seq: u64,
-    generation: qv_crypto::KeyGeneration,
-    writer: qv_model::WriterId,
-    entry: SnapshotEntry,
 }
 
 impl RecoverySnapshot {
@@ -415,45 +501,18 @@ fn day_of(ms: i64) -> i64 {
     ms.div_euclid(MILLIS_PER_DAY)
 }
 
-/// The automatic-policy decision from authenticated headers only (0007
-/// §3.2): take a copy when there is none from today, or when the newest is
-/// more than an hour old.
-fn automatic_decision(
-    rows: &[(SnapshotEntry, ArchiveHeader)],
-    now: Timestamp,
-) -> Option<SnapshotSkip> {
-    let mut newest: Option<Timestamp> = None;
-    let mut today = false;
-    for (entry, header) in rows {
-        if entry.kind() != SnapshotKind::Ordinary {
-            continue;
-        }
-        let created = header.created_at();
-        if newest.is_none_or(|t| created > t) {
-            newest = Some(created);
-        }
-        if day_of(created.0) == day_of(now.0) {
-            today = true;
-        }
-    }
-    let recent = newest
-        .is_some_and(|t| now.0.saturating_sub(t.0) < SNAPSHOT_INTERVAL_SECONDS * MILLIS_PER_SECOND);
-    if today && recent {
-        Some(SnapshotSkip::OnePerHour)
-    } else {
-        None
-    }
-}
-
-/// One policy pass: reclassify stale recovery copies, prune expired and
-/// over-budget ordinary snapshots, then write the new copy.
+/// One policy pass over the snapshot files: reclassify stale recovery
+/// copies, prune expired and over-budget files, then, with `kind`, write a
+/// new copy (since plan 0059 only a VK rotation's recovery copy). Without
+/// `kind` it only prunes: ordinary snapshots live in the vault now, and the
+/// files written before stay listable until they age out.
 ///
 /// `pinned` is the archive ID an in-progress operation protects. The pass
 /// never removes it, and never removes the copy it just wrote.
 fn snapshot_pass(
     policy: &SnapshotPolicy,
     vault: &mut UnlockedVault,
-    kind: SnapshotKind,
+    kind: Option<SnapshotKind>,
     now: Timestamp,
     allow_over_budget: bool,
     pinned: Option<&str>,
@@ -489,6 +548,12 @@ fn snapshot_pass(
     let mut old = match old_rows(policy, vault) {
         OldRows::Rows(rows) => rows,
         OldRows::Unavailable => {
+            let Some(kind) = kind else {
+                return Ok(Taken {
+                    report: SnapshotReport::failed(),
+                    entry: None,
+                });
+            };
             if kind == SnapshotKind::Ordinary {
                 return Err(StoreError::Integrity.into());
             }
@@ -511,9 +576,13 @@ fn snapshot_pass(
     };
 
     // 2. Write and verify the new copy (0004 §6.5).
-    let published = dir.publish(vault, kind, now, cancelled)?;
-    let new = published_summary(&published);
-    let new_entry = published.entry().clone();
+    let published = match kind {
+        Some(kind) => Some(dir.publish(vault, kind, now, cancelled)?),
+        None => None,
+    };
+    let new = published.as_ref().map(published_summary);
+    let new_entry = published.as_ref().map(|p| p.entry().clone());
+    let new_id = new.as_ref().map(|n| n.archive_id.clone());
 
     // 3. Age pruning, oldest first, authenticated headers only.
     let (rows, _) = authenticated(policy, vault)?;
@@ -557,14 +626,15 @@ fn snapshot_pass(
     let mut candidates = Vec::new();
     for (entry, header) in &rows {
         let id = header.archive_id_hex();
-        if entry.kind() != SnapshotKind::Ordinary && id != new.archive_id {
+        let is_new = new_id.as_deref() == Some(id.as_str());
+        if entry.kind() != SnapshotKind::Ordinary && !is_new {
             continue;
         }
         count = count.checked_add(1).ok_or(StoreError::LimitExceeded)?;
         bytes = bytes
             .checked_add(entry.size())
             .ok_or(StoreError::LimitExceeded)?;
-        if id != new.archive_id && pinned != Some(id.as_str()) {
+        if !is_new && pinned != Some(id.as_str()) {
             candidates.push((header.created_at(), id, Candidate::Current(entry.clone())));
         }
     }
@@ -581,7 +651,8 @@ fn snapshot_pass(
     let fits =
         |count: u64, bytes: u64| count <= u64::from(policy.max_count) && bytes <= policy.max_bytes;
     // A copy that cannot fit even alone never justifies deleting others.
-    if new.size <= policy.max_bytes && policy.max_count > 0 {
+    let new_size = new.as_ref().map_or(0, |n| n.size);
+    if new_size <= policy.max_bytes && policy.max_count > 0 {
         for (_, id, candidate) in candidates {
             if fits(count, bytes) || report.failed {
                 break;
@@ -607,12 +678,18 @@ fn snapshot_pass(
 
     // 5. What does not fit is a budget refusal, not damage: remove the copy
     //    we just wrote unless the caller approved exceeding the budget.
+    let (Some(new), Some(new_entry)) = (new, new_entry) else {
+        return Ok(Taken {
+            report,
+            entry: None,
+        });
+    };
     if !fits(count, bytes) && !allow_over_budget {
         match dir.remove(&new_entry) {
             Ok(()) | Err(StoreError::NotFound) => {}
             Err(e) => return Err(e.into()),
         }
-        if kind == SnapshotKind::Recovery {
+        if new_entry.kind() == SnapshotKind::Recovery {
             return Err(CoreError::SnapshotOverBudget { needed: new.size });
         }
         report.skipped = Some(SnapshotSkip::OverBudget { needed: new.size });
@@ -676,7 +753,7 @@ pub(crate) fn begin_recovery(
     let taken = snapshot_pass(
         &policy,
         &mut open.vault,
-        SnapshotKind::Recovery,
+        Some(SnapshotKind::Recovery),
         now,
         allow_over_budget,
         None,
@@ -686,56 +763,12 @@ pub(crate) fn begin_recovery(
     let entry = taken.entry.ok_or(CoreError::Internal)?;
     *open.pin.lock().unwrap_or_else(PoisonError::into_inner) = Some(RecoveryPin {
         archive_id: summary.archive_id.clone(),
-        seq: open.vault.local_seq(),
-        generation: open.vault.header().key_generation,
-        entry: entry.clone(),
-        writer: open.vault.writer_id(),
     });
     Ok(RecoverySnapshot {
         pin: Arc::clone(&open.pin),
         summary,
         entry,
     })
-}
-
-/// Enforce recovery policy inside the serialized destructive call. Reading
-/// every frame again detects missing/replaced/damaged copies; frontend ordering
-/// and an authenticated header alone cannot authorize losing the only data.
-pub(crate) fn require_recovery(ctx: &crate::session::Ctx<'_>) -> Result<(), CoreError> {
-    ctx.check_cancel()?;
-    let open = &ctx.open;
-    let pin = open
-        .pin
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-        .ok_or(CoreError::NotAllowed)?;
-    if pin.seq != open.vault.local_seq()
-        || pin.generation != open.vault.header().key_generation
-        || pin.writer != open.vault.writer_id()
-    {
-        return Err(CoreError::StaleHandle);
-    }
-    let policy = open.snapshots.as_ref().ok_or(CoreError::NotAllowed)?;
-    let scope = ArchiveScope::new(open.vault.header().vault_id, pin.generation);
-    let file = policy.dir.open_entry(&pin.entry)?;
-    let mut input = std::io::BufReader::new(file);
-    let c = ctx.canceller();
-    let opened = qv_store::read_archive(
-        &mut input,
-        scope,
-        open.vault.vault_key(),
-        &mut |_| Ok(()),
-        &|| c.is_cancelled(),
-    )?;
-    ctx.check_cancel()?;
-    if opened.header().archive_id_hex() != pin.archive_id
-        || opened.header().is_self_contained()
-        || opened.manifest() != open.vault.manifest()
-    {
-        return Err(CoreError::StaleHandle);
-    }
-    Ok(())
 }
 
 pub(crate) fn finish_recovery(
@@ -764,6 +797,39 @@ pub(crate) fn finish_recovery(
     Ok(())
 }
 
+/// The vault's own snapshots as listing rows (plan 0059): `size` is what
+/// each alone keeps.
+fn in_vault(
+    vault: &UnlockedVault,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<SnapshotSummary>, CoreError> {
+    Ok(vault
+        .snapshot_details(cancelled)?
+        .into_iter()
+        .map(|d| SnapshotSummary {
+            archive_id: d.row.id_hex(),
+            created_at: d.row.created_at,
+            kind: d.row.kind,
+            size: d.own_bytes,
+            objects: d.objects,
+            total_bytes: d.total_bytes,
+        })
+        .collect())
+}
+
+/// What a permanent deletion would take out of the snapshots (0007 §3.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeletionTarget<'a> {
+    /// Every non-conflicted item in the trash ([`Session::empty_trash`]).
+    Trash,
+    /// These trashed items ([`Session::purge`]).
+    Items(&'a [crate::ItemHandle]),
+    /// One attachment ([`Session::remove_attachment`]).
+    Attachment(crate::AttachmentHandle),
+    /// One entry's history ([`Session::purge_history`]).
+    History(crate::EntryHandle),
+}
+
 impl Session {
     /// The authenticated local snapshots of this vault (0011 `snapshot ls`).
     ///
@@ -772,16 +838,25 @@ impl Session {
     /// returned when no snapshot policy is configured.
     pub fn snapshots(&self) -> Result<SnapshotListing, CoreError> {
         self.read(|ctx| {
+            let c = ctx.canceller();
+            let mut snapshots = in_vault(&ctx.open.vault, &|| c.is_cancelled())?;
             let Some(policy) = ctx.open.snapshots.clone() else {
-                return Ok(SnapshotListing::default());
+                snapshots.sort_by(|a, b| {
+                    b.created_at
+                        .cmp(&a.created_at)
+                        .then_with(|| a.archive_id.cmp(&b.archive_id))
+                });
+                return Ok(SnapshotListing {
+                    snapshots,
+                    unreadable: 0,
+                });
             };
             let (rows, unreadable) = authenticated(&policy, &ctx.open.vault)?;
             // Earlier generations' copies are accounted for by the verified
             // inventory: neither listed nor reported as unreadable.
             let accounted = inventoried(&policy, &ctx.open.vault);
             let unreadable = unreadable.saturating_sub(accounted.len() as u64);
-            let mut snapshots: Vec<SnapshotSummary> =
-                rows.iter().map(|(e, h)| summary(e, h)).collect();
+            snapshots.extend(rows.iter().map(|(e, h)| summary(e, h)));
             snapshots.sort_by(|a, b| {
                 b.created_at
                     .cmp(&a.created_at)
@@ -794,6 +869,60 @@ impl Session {
         })
     }
 
+    /// How many of the vault's snapshots hold what a permanent deletion of
+    /// `target` would delete, for its confirmation (0007 §3.3): unless the
+    /// user keeps them, the deletion removes them too.
+    pub fn snapshots_holding(&self, target: DeletionTarget<'_>) -> Result<usize, CoreError> {
+        self.read(|ctx| {
+            let index = &ctx.open.index;
+            let mut records = std::collections::BTreeSet::new();
+            match target {
+                DeletionTarget::Trash => {
+                    for (id, r) in &index.records {
+                        if r.status.in_trash
+                            && !r.status.conflict
+                            && matches!(
+                                r.kind,
+                                qv_model::RecordKind::Entry | qv_model::RecordKind::Group
+                            )
+                        {
+                            records.insert(*id);
+                        }
+                    }
+                }
+                DeletionTarget::Items(items) => {
+                    for item in items {
+                        records.insert(match item {
+                            crate::ItemHandle::Entry(h) => h.record,
+                            crate::ItemHandle::Group(h) => h.record,
+                        });
+                    }
+                }
+                DeletionTarget::Attachment(h) => {
+                    records.insert(h.record);
+                }
+                DeletionTarget::History(e) => {
+                    records.insert(e.record);
+                }
+            }
+            // An entry's attachments go with it.
+            let entries = records.clone();
+            for (id, r) in &index.records {
+                if let crate::index::Data::Attachment { entry } = &r.data
+                    && entries.contains(entry)
+                {
+                    records.insert(*id);
+                }
+            }
+            let c = ctx.canceller();
+            Ok(ctx
+                .open
+                .vault
+                .snapshots_containing(&records, &|| c.is_cancelled())?
+                .len())
+        })
+    }
+
     /// Matches local snapshot filename IDs, including damaged/foreign files.
     /// Authentication is required by `restore_snapshot` before acceptance.
     pub fn snapshot_matches(&self, prefix: &str) -> Result<Vec<String>, CoreError> {
@@ -803,14 +932,24 @@ impl Session {
         }
         let prefix = prefix.to_ascii_lowercase();
         self.read(|ctx| {
-            let policy = ctx.open.snapshots.clone().ok_or(CoreError::NotAllowed)?;
-            let mut ids: Vec<String> = policy
-                .dir
-                .entries()?
+            let mut ids: Vec<String> = ctx
+                .open
+                .vault
+                .snapshot_rows()
                 .iter()
-                .map(|e| e.archive_id().to_owned())
+                .map(qv_store::SnapshotRow::id_hex)
                 .filter(|id| id.starts_with(&prefix))
                 .collect();
+            if let Some(policy) = ctx.open.snapshots.clone() {
+                ids.extend(
+                    policy
+                        .dir
+                        .entries()?
+                        .iter()
+                        .map(|e| e.archive_id().to_owned())
+                        .filter(|id| id.starts_with(&prefix)),
+                );
+            }
             ids.sort();
             ids.dedup();
             Ok(ids)
@@ -835,7 +974,27 @@ impl Session {
             if cancel.is_some_and(CancelToken::is_cancelled) {
                 return Err(CoreError::Cancelled);
             }
-            let policy = ctx.open.snapshots.clone().ok_or(CoreError::NotAllowed)?;
+            // A snapshot inside the vault first (plan 0059), then a file.
+            if let Some(row) = ctx
+                .open
+                .vault
+                .snapshot_rows()
+                .iter()
+                .find(|r| r.id_hex() == id)
+                .copied()
+            {
+                #[cfg(test)]
+                crate::session::hooks::reached(crate::session::hooks::Point::BeforeCommit);
+                ctx.check_cancel()?;
+                let c = ctx.canceller();
+                ctx.open.vault.restore_snapshot(&row.id, path, &|| {
+                    c.is_cancelled() || cancel.is_some_and(CancelToken::is_cancelled)
+                })?;
+                #[cfg(test)]
+                crate::session::hooks::reached(crate::session::hooks::Point::AfterCommit);
+                return Ok(());
+            }
+            let policy = ctx.open.snapshots.clone().ok_or(CoreError::NotFound)?;
             let entries = policy.dir.entries()?;
             let mut matches = entries.iter().filter(|e| e.archive_id() == id);
             let entry = matches.next().ok_or(CoreError::NotFound)?;
@@ -863,15 +1022,20 @@ impl Session {
     /// §3.5), newest first. Includes recovery copies.
     pub fn snapshots_before(&self, cutoff: Timestamp) -> Result<Vec<SnapshotSummary>, CoreError> {
         self.read(|ctx| {
-            let Some(policy) = ctx.open.snapshots.clone() else {
-                return Ok(Vec::new());
-            };
-            let (rows, _) = authenticated(&policy, &ctx.open.vault)?;
-            let mut snapshots: Vec<SnapshotSummary> = rows
-                .iter()
-                .map(|(e, h)| summary(e, h))
-                .filter(|s| s.created_at < cutoff)
-                .collect();
+            let c = ctx.canceller();
+            let mut snapshots: Vec<SnapshotSummary> =
+                in_vault(&ctx.open.vault, &|| c.is_cancelled())?
+                    .into_iter()
+                    .filter(|s| s.created_at < cutoff)
+                    .collect();
+            if let Some(policy) = ctx.open.snapshots.clone() {
+                let (rows, _) = authenticated(&policy, &ctx.open.vault)?;
+                snapshots.extend(
+                    rows.iter()
+                        .map(|(e, h)| summary(e, h))
+                        .filter(|s| s.created_at < cutoff),
+                );
+            }
             snapshots.sort_by(|a, b| {
                 b.created_at
                     .cmp(&a.created_at)
@@ -886,15 +1050,36 @@ impl Session {
     /// copy pinned by an in-progress destructive operation is never deleted.
     pub fn delete_snapshots(&self, ids: &[String]) -> Result<usize, CoreError> {
         self.mutate(|ctx| {
+            // Inside the vault: one commit removes them (plan 0059).
+            let kept: Vec<[u8; 16]> = ctx
+                .open
+                .vault
+                .snapshot_rows()
+                .iter()
+                .filter(|r| ids.contains(&r.id_hex()))
+                .map(|r| r.id)
+                .collect();
+            let mut deleted = kept.len();
+            if !kept.is_empty() {
+                if ctx.open.read_only {
+                    return Err(StoreError::NoAnchor.into());
+                }
+                #[cfg(test)]
+                crate::session::hooks::reached(crate::session::hooks::Point::BeforeCommit);
+                ctx.check_cancel()?;
+                let mut w = ctx.open.vault.write()?;
+                w.keep_no_snapshot();
+                w.remove_snapshots(&kept);
+                w.commit()?;
+            }
             let Some(policy) = ctx.open.snapshots.clone() else {
-                return Ok(0);
+                return Ok(deleted);
             };
             let pinned = ctx.open.pinned();
             let (rows, _) = authenticated(&policy, &ctx.open.vault)?;
             #[cfg(test)]
             crate::session::hooks::reached(crate::session::hooks::Point::BeforeCommit);
             ctx.check_cancel()?;
-            let mut deleted = 0;
             for (entry, header) in &rows {
                 let id = header.archive_id_hex();
                 if !ids.contains(&id) || pinned.as_deref() == Some(id.as_str()) {
@@ -1000,24 +1185,15 @@ impl Session {
             if cancelled() {
                 return Ok(());
             }
-            let decision = match authenticated(&policy, &open.vault) {
-                Ok((rows, _)) => automatic_decision(&rows, now),
-                Err(_) => {
-                    open.auto_snapshot = Some(SnapshotReport::failed());
-                    return Ok(());
-                }
-            };
-            if let Some(skip) = decision {
-                open.auto_snapshot = Some(SnapshotReport {
-                    skipped: Some(skip),
-                    ..SnapshotReport::default()
-                });
+            // Ordinary snapshots are kept by commits inside the vault (plan
+            // 0059); this pass only ages out the files written before.
+            if policy.dir.entries().is_ok_and(|e| e.is_empty()) {
                 return Ok(());
             }
             let report = match snapshot_pass(
                 &policy,
                 &mut open.vault,
-                SnapshotKind::Ordinary,
+                None,
                 now,
                 false,
                 pinned.as_deref(),
@@ -1026,7 +1202,9 @@ impl Session {
                 Ok(taken) => taken.report,
                 Err(_) => SnapshotReport::failed(),
             };
-            open.auto_snapshot = Some(report);
+            if report.failed || !report.pruned.is_empty() {
+                open.auto_snapshot = Some(report);
+            }
             Ok(())
         });
     }
@@ -1055,175 +1233,160 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn snapshot_policy_coalesces_hourly_and_first_of_day() {
-        let env = Env::new();
-        // Midday of an arbitrary UTC day.
-        let day = 20_000i64;
-        let t0 = day * MILLIS_PER_DAY + 12 * 60 * 60 * MILLIS_PER_SECOND;
-        env.time.set(t0);
-        let s = env.unlock_with(Some(policy(
-            &env,
-            DEFAULT_MAX_COUNT,
-            DEFAULT_MAX_BYTES,
-            DEFAULT_MAX_AGE_SECONDS,
-        )));
-        let first = s.snapshot_status().unwrap();
-        let Some(published) = first.published.clone() else {
-            panic!("the first unlock of the day took no snapshot: {first:?}");
-        };
-        assert_eq!(published.kind, SnapshotKind::Ordinary);
-        assert_eq!(published.created_at, Timestamp(t0));
-        assert!(published.size > 0 && published.objects > 0 && published.total_bytes > 0);
-        assert_eq!(s.snapshots().unwrap().snapshots.len(), 1);
-        drop(s);
+    const HOUR: i64 = 60 * 60 * MILLIS_PER_SECOND;
 
-        // Half an hour later: the hourly coalescing skips it.
-        env.time.set(t0 + 30 * 60 * MILLIS_PER_SECOND);
-        let s = env.unlock_with(Some(policy(
-            &env,
-            DEFAULT_MAX_COUNT,
-            DEFAULT_MAX_BYTES,
-            DEFAULT_MAX_AGE_SECONDS,
-        )));
-        let second = s.snapshot_status().unwrap();
-        assert_eq!(second.skipped, Some(SnapshotSkip::OnePerHour));
-        assert!(second.published.is_none());
-        assert!(second.pruned.is_empty());
-        assert_eq!(s.snapshots().unwrap().snapshots.len(), 1);
-        drop(s);
-
-        // More than an hour later: a second ordinary copy.
-        env.time.set(t0 + 61 * 60 * MILLIS_PER_SECOND);
-        let s = env.unlock_with(Some(policy(
-            &env,
-            DEFAULT_MAX_COUNT,
-            DEFAULT_MAX_BYTES,
-            DEFAULT_MAX_AGE_SECONDS,
-        )));
-        let third = s.snapshot_status().unwrap();
-        let Some(second_copy) = third.published.clone() else {
-            panic!("an hourly snapshot was not taken: {third:?}");
-        };
-        assert_ne!(second_copy.archive_id, published.archive_id);
-        drop(s);
-
-        // First unlock of the next day, only a few minutes later: taken even
-        // though the hour has not passed (0007 §3.2).
-        let next_day = (day + 1) * MILLIS_PER_DAY + 5 * 60 * MILLIS_PER_SECOND;
-        env.time.set(next_day);
-        let s = env.unlock_with(Some(policy(
-            &env,
-            DEFAULT_MAX_COUNT,
-            DEFAULT_MAX_BYTES,
-            DEFAULT_MAX_AGE_SECONDS,
-        )));
-        let report = s.snapshot_status().unwrap();
-        let Some(today) = report.published.clone() else {
-            panic!("the first unlock of the next day took no snapshot: {report:?}");
-        };
-        assert_eq!(today.created_at, Timestamp(next_day));
-        assert_eq!(s.snapshots().unwrap().snapshots.len(), 3);
-        // The listing is newest first by authenticated creation time.
-        let rows = s.snapshots().unwrap().snapshots;
-        assert!(rows.windows(2).all(|w| w[0].created_at >= w[1].created_at));
+    /// Sets the clock to `hours`:`minutes` UTC on `day` and returns it.
+    fn at(env: &Env, day: i64, hours: i64, minutes: i64) -> i64 {
+        let t = day * MILLIS_PER_DAY + hours * HOUR + minutes * 60 * MILLIS_PER_SECOND;
+        env.time.set(t);
+        t
     }
 
+    fn defaults(env: &Env) -> SnapshotPolicy {
+        policy(
+            env,
+            DEFAULT_MAX_COUNT,
+            DEFAULT_MAX_BYTES,
+            DEFAULT_MAX_AGE_SECONDS,
+        )
+    }
+
+    // 0012 §1: Snapshot disk growth
     #[test]
-    fn snapshot_disk_growth_prunes_to_the_budgets_and_never_the_pinned_copy() {
+    fn snapshot_commits_keep_one_per_hour_and_first_of_day_and_reads_keep_none() {
         let env = Env::new();
-        let day = 21_000i64;
-        let t0 = day * MILLIS_PER_DAY + 8 * 60 * 60 * MILLIS_PER_SECOND;
-        env.time.set(t0);
-        let mut taken = Vec::new();
-        for i in 0..3 {
-            env.time.set(t0 + i * 61 * 60 * MILLIS_PER_SECOND);
-            let s = env.unlock_with(Some(policy(
-                &env,
-                2,
-                DEFAULT_MAX_BYTES,
-                DEFAULT_MAX_AGE_SECONDS,
-            )));
-            let report = s.snapshot_status().unwrap();
-            let Some(published) = report.published.clone() else {
-                panic!("no snapshot at step {i}: {report:?}");
-            };
-            taken.push(published.archive_id);
-            drop(s);
-        }
+        let t0 = at(&env, 20_000, 12, 0);
+        let s = env.unlock_with(Some(defaults(&env)));
+        // An unlock and reads write nothing (plan 0059).
+        let seq0 = seq(&s);
+        assert!(s.snapshots().unwrap().snapshots.is_empty());
+        assert_eq!(seq(&s), seq0);
+        let root = s.root().unwrap();
+        add_entry(&s, root, "one");
+        let Some(first) = s.snapshot_status().unwrap().published else {
+            panic!("the first change of the day kept no snapshot");
+        };
+        assert_eq!(first.kind, SnapshotKind::Ordinary);
+        assert_eq!(first.created_at, Timestamp(t0));
+        let rows = s.snapshots().unwrap().snapshots;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].objects > 0 && rows[0].total_bytes > 0);
+        // Half an hour later: no second one.
+        at(&env, 20_000, 12, 30);
+        add_entry(&s, root, "two");
+        assert_eq!(s.snapshots().unwrap().snapshots.len(), 1);
+        // More than an hour later: a second one.
+        at(&env, 20_000, 13, 1);
+        add_entry(&s, root, "three");
+        assert_eq!(s.snapshots().unwrap().snapshots.len(), 2);
+        // The first change of the next day, minutes after: a third.
+        let next = at(&env, 20_001, 0, 5);
+        add_entry(&s, root, "four");
+        let rows = s.snapshots().unwrap().snapshots;
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].created_at, Timestamp(next));
+        assert!(rows.windows(2).all(|w| w[0].created_at >= w[1].created_at));
+        // No snapshot file is written; the snapshots survive a reopen.
+        let dir = env.dir.path().join("snapshots");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        drop(s);
+        let s = env.unlock_with(Some(defaults(&env)));
+        assert_eq!(s.snapshots().unwrap().snapshots.len(), 3);
+        assert!(s.verify(None).unwrap().ok());
+    }
+
+    // 0012 §1: Snapshot disk growth
+    #[test]
+    fn snapshot_commits_prune_to_count_age_and_bytes() {
+        let env = Env::new();
+        at(&env, 21_000, 8, 0);
         let s = env.unlock_with(Some(policy(
             &env,
             2,
             DEFAULT_MAX_BYTES,
             DEFAULT_MAX_AGE_SECONDS,
         )));
-        let rows = s.snapshots().unwrap();
-        assert_eq!(rows.snapshots.len(), 2, "the count budget did not prune");
-        // Oldest first: the first copy is gone, the last two remain.
-        assert!(!ids(&rows).contains(&taken[0]));
-        assert!(ids(&rows).contains(&taken[1]) && ids(&rows).contains(&taken[2]));
-
-        // The mandatory recovery copy is pinned: deleting every ID leaves it.
-        let snap = s.begin_destructive(false, None).unwrap();
-        let pinned = snap.summary().archive_id.clone();
+        let root = s.root().unwrap();
+        let mut taken = Vec::new();
+        for i in 0..3 {
+            at(&env, 21_000, 8 + 2 * i, 0);
+            add_entry(&s, root, &format!("entry {i}"));
+            taken.push(s.snapshot_status().unwrap().published.unwrap().archive_id);
+        }
+        // Count: the oldest went in the commit that kept the third.
+        let rows = ids(&s.snapshots().unwrap());
+        assert_eq!(rows.len(), 2);
+        assert!(!rows.contains(&taken[0]));
+        // Deleting a snapshot is a commit of its own.
+        let before = seq(&s);
         assert_eq!(
-            s.delete_snapshots(std::slice::from_ref(&pinned)).unwrap(),
-            0
-        );
-        assert_eq!(s.snapshots().unwrap().snapshots.len(), 2);
-        s.finish_destructive(snap).unwrap();
-        assert_eq!(s.snapshots().unwrap().snapshots.len(), 2);
-        // After completion the copy is ordinary and deletable.
-        assert_eq!(
-            s.snapshots()
-                .unwrap()
-                .snapshots
-                .iter()
-                .filter(|x| x.archive_id == pinned)
-                .count(),
+            s.delete_snapshots(std::slice::from_ref(&taken[1])).unwrap(),
             1
         );
-        assert_eq!(s.delete_snapshots(&[pinned]).unwrap(), 1);
-        assert_eq!(s.snapshots().unwrap().snapshots.len(), 1);
-        // The vault was never written by any of this.
-        assert_eq!(seq(&s), 1);
-    }
-
-    #[test]
-    fn snapshot_budget_covers_bytes_and_age() {
-        let env = Env::new();
-        let day = 22_000i64;
-        let t0 = day * MILLIS_PER_DAY + 9 * 60 * 60 * MILLIS_PER_SECOND;
-        env.time.set(t0);
-        let s = env.unlock_with(Some(policy(
-            &env,
-            48,
-            DEFAULT_MAX_BYTES,
-            DEFAULT_MAX_AGE_SECONDS,
-        )));
-        let size = s.snapshot_status().unwrap().published.unwrap().size;
+        assert_eq!(seq(&s), before + 1);
+        assert_eq!(ids(&s.snapshots().unwrap()), vec![taken[2].clone()]);
         drop(s);
 
-        // A byte budget of one and a half snapshots keeps exactly one.
-        let max_bytes = size + size / 2;
-        for i in 0..2 {
-            env.time.set(t0 + (i + 1) * 61 * 60 * MILLIS_PER_SECOND);
-            let s = env.unlock_with(Some(policy(&env, 48, max_bytes, DEFAULT_MAX_AGE_SECONDS)));
-            if i == 1 {
-                let report = s.snapshot_status().unwrap();
-                assert_eq!(report.pruned.len(), 1, "{report:?}");
-                assert_eq!(s.snapshots().unwrap().snapshots.len(), 1);
-            }
-            drop(s);
-        }
-
-        // Age: an ordinary copy older than the maximum age is pruned even
-        // when the count and byte budgets are not reached.
-        env.time.set(t0 + 6 * 60 * 60 * MILLIS_PER_SECOND);
+        // Age: with an hour's budget the next kept snapshot prunes the old.
         let s = env.unlock_with(Some(policy(&env, 48, DEFAULT_MAX_BYTES, 60 * 60)));
+        at(&env, 21_000, 20, 0);
+        add_entry(&s, s.root().unwrap(), "late");
         let report = s.snapshot_status().unwrap();
-        assert_eq!(report.pruned.len(), 1, "{report:?}");
+        assert_eq!(report.pruned, vec![taken[2].clone()]);
         assert_eq!(s.snapshots().unwrap().snapshots.len(), 1);
+        drop(s);
+
+        // Bytes: with no room even for one, the commit goes ahead and the
+        // snapshot is skipped.
+        let s = env.unlock_with(Some(policy(&env, 48, 0, DEFAULT_MAX_AGE_SECONDS)));
+        at(&env, 21_001, 9, 0);
+        let before = seq(&s);
+        add_entry(&s, s.root().unwrap(), "no room");
+        assert!(seq(&s) > before);
+        let report = s.snapshot_status().unwrap();
+        assert!(matches!(
+            report.skipped,
+            Some(SnapshotSkip::OverBudget { .. })
+        ));
+        assert!(s.snapshots().unwrap().snapshots.is_empty());
+    }
+
+    // 0012 §1: Rotation/purge ambiguity
+    #[test]
+    fn permanent_deletion_takes_no_copy_and_removes_the_snapshots_holding_it_unless_kept() {
+        let env = Env::new();
+        at(&env, 25_000, 9, 0);
+        let s = env.unlock_with(Some(env.snapshot_policy()));
+        assert_eq!(err(s.adopt_baseline()), CoreError::NotAllowed);
+        let root = s.root().unwrap();
+        let a = add_entry(&s, root, "first");
+        let b = add_entry(&s, root, "second");
+        at(&env, 25_000, 11, 0);
+        s.delete(crate::ItemHandle::Entry(a), false).unwrap();
+        at(&env, 25_000, 13, 0);
+        s.delete(crate::ItemHandle::Entry(b), false).unwrap();
+        // The 11:00 and 13:00 snapshots hold `a` (live, then trashed).
+        assert_eq!(s.snapshots().unwrap().snapshots.len(), 3);
+        assert_eq!(
+            s.snapshots_holding(DeletionTarget::Items(&[crate::ItemHandle::Entry(a)]))
+                .unwrap(),
+            2
+        );
+        // Kept on request: one commit, no copy, no snapshot removed.
+        let before = seq(&s);
+        s.purge(&[crate::ItemHandle::Entry(a)], true).unwrap();
+        assert_eq!(seq(&s), before + 1);
+        assert_eq!(s.snapshots().unwrap().snapshots.len(), 3);
+        // Otherwise the snapshots holding `b` go, and none is kept.
+        assert_eq!(s.snapshots_holding(DeletionTarget::Trash).unwrap(), 2);
+        at(&env, 25_000, 15, 0);
+        assert_eq!(s.empty_trash(false).unwrap().purged, 1);
+        assert_eq!(s.snapshots().unwrap().snapshots.len(), 1);
+        assert_eq!(s.snapshots_holding(DeletionTarget::Trash).unwrap(), 0);
+        // No recovery file was written for any of it.
+        let dir = env.dir.path().join("snapshots");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        assert!(s.verify(None).unwrap().ok());
     }
 
     #[test]
@@ -1276,84 +1439,13 @@ mod tests {
         assert!(s.snapshots_before(Timestamp(i64::MAX)).unwrap().is_empty());
     }
 
-    // 0012 §1: Rotation/purge ambiguity
-    #[test]
-    fn destructive_authorization_is_current_verified_and_session_bound() {
-        let env = Env::new();
-        let s = env.unlock_with(Some(env.snapshot_policy()));
-        assert_eq!(err(s.adopt_baseline()), CoreError::NotAllowed);
-        let root = s.root().unwrap();
-        let a = add_entry(&s, root, "first");
-        let b = add_entry(&s, root, "second");
-        s.delete(crate::ItemHandle::Entry(a), false).unwrap();
-        s.delete(crate::ItemHandle::Entry(b), false).unwrap();
-        let before = seq(&s);
-        assert_eq!(
-            err(s.purge(&[crate::ItemHandle::Entry(a)])),
-            CoreError::NotAllowed
-        );
-        assert_eq!(err(s.purge_history(b)), CoreError::NotAllowed);
-        assert_eq!(seq(&s), before);
-
-        let stale = s.begin_destructive(false, None).unwrap();
-        let d = s.new_group(root, "intervening edit").unwrap();
-        s.save_group(d).unwrap();
-        assert_eq!(err(s.empty_trash()), CoreError::StaleHandle);
-        assert_eq!(seq(&s), before + 1);
-        s.finish_destructive(stale).unwrap();
-
-        for damage in [false, true] {
-            let copy = s.begin_destructive(false, None).unwrap();
-            let path = env
-                .dir
-                .path()
-                .join("snapshots")
-                .join(format!("recover-{}.qvsnap", copy.summary().archive_id));
-            if damage {
-                std::fs::write(&path, b"damaged").unwrap();
-            } else {
-                if crate::testutil::wine_keeps_deleted_names() {
-                    s.finish_destructive(copy).unwrap();
-                    continue;
-                }
-                std::fs::remove_file(&path).unwrap();
-            }
-            assert!(s.empty_trash().is_err());
-            assert_eq!(seq(&s), before + 1);
-            assert!(s.finish_destructive(copy).is_err());
-        }
-
-        let other_env = Env::new();
-        let other = other_env.unlock_with(Some(other_env.snapshot_policy()));
-        let foreign = other.begin_destructive(false, None).unwrap();
-        assert_eq!(err(s.finish_destructive(foreign)), CoreError::StaleHandle);
-        assert_eq!(err(s.empty_trash()), CoreError::NotAllowed);
-
-        let copy = s.begin_destructive(false, None).unwrap();
-        s.purge(&[crate::ItemHandle::Entry(a)]).unwrap();
-        assert_eq!(seq(&s), before + 2);
-        assert_eq!(
-            err(s.purge(&[crate::ItemHandle::Entry(b)])),
-            CoreError::StaleHandle
-        );
-        s.finish_destructive(copy).unwrap();
-        crate::testutil::destructive(&s, || s.purge(&[crate::ItemHandle::Entry(b)])).unwrap();
-        assert_eq!(seq(&s), before + 3);
-    }
-
     #[test]
     fn recovery_copy_left_by_a_crash_is_reclassified_before_pruning() {
         let env = Env::new();
-        let day = 23_000i64;
-        let t0 = day * MILLIS_PER_DAY + 10 * 60 * 60 * MILLIS_PER_SECOND;
-        env.time.set(t0);
-        let s = env.unlock_with(Some(policy(
-            &env,
-            48,
-            DEFAULT_MAX_BYTES,
-            DEFAULT_MAX_AGE_SECONDS,
-        )));
-        // A crash: the handle is dropped without finish_destructive.
+        let t0 = at(&env, 23_000, 10, 0);
+        let s = env.unlock_with(Some(defaults(&env)));
+        // A crash: the handle of a rotation-style recovery file is dropped
+        // without finish_destructive; a second one completes.
         let crashed = s.begin_destructive(false, None).unwrap();
         let crashed_id = crashed.summary().archive_id.clone();
         drop(crashed);
@@ -1363,11 +1455,21 @@ mod tests {
             .find(|r| r.archive_id == crashed_id)
             .expect("the crashed copy is not listed");
         assert_eq!(crashed_row.kind, SnapshotKind::Recovery);
+        // The next copy's own pass reclassifies the unpinned one first.
+        let done = s.begin_destructive(false, None).unwrap();
+        s.finish_destructive(done).unwrap();
+        assert!(
+            s.snapshots()
+                .unwrap()
+                .snapshots
+                .iter()
+                .all(|r| r.kind == SnapshotKind::Ordinary)
+        );
         drop(s);
 
-        // The next policy pass reclassifies it and then prunes it like any
-        // ordinary snapshot.
-        env.time.set(t0 + 61 * 60 * MILLIS_PER_SECOND);
+        // The unlock pass reclassifies it and then prunes the files like any
+        // ordinary snapshot; it writes no new file (plan 0059).
+        env.time.set(t0 + HOUR);
         let s = env.unlock_with(Some(policy(
             &env,
             1,
@@ -1377,56 +1479,14 @@ mod tests {
         let rows = s.snapshots().unwrap().snapshots;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, SnapshotKind::Ordinary);
-        assert_ne!(
-            rows[0].archive_id, crashed_id,
-            "the crashed copy survived pruning"
-        );
-    }
-
-    #[test]
-    fn snapshot_failure_never_fails_an_unlock() {
-        let env = Env::new();
-        let configured = policy(&env, 48, DEFAULT_MAX_BYTES, DEFAULT_MAX_AGE_SECONDS);
-        let dir = configured.dir.path().to_owned();
-        // The directory is private but not writable: publication fails.
-        crate::testutil::set_mode(&dir, 0o500);
-        let denied = std::fs::write(dir.join("probe"), b"").is_err();
-        let _ = std::fs::remove_file(dir.join("probe"));
-        if denied {
-            let s = env.unlock_with(Some(policy(
-                &env,
-                48,
-                DEFAULT_MAX_BYTES,
-                DEFAULT_MAX_AGE_SECONDS,
-            )));
-            let report = s.snapshot_status().unwrap();
-            assert!(report.failed, "{report:?}");
-            assert!(report.published.is_none());
-            // The unlocked vault still works.
-            assert_eq!(s.overview().unwrap().name.expose(), crate::testutil::NAME);
-        } else {
-            // Permission-override privileges (uid 0 in a user namespace)
-            // cannot produce this failure; the unsafe-directory refusal and
-            // the writer's own error tests cover the abort.
-            eprintln!(
-                "note: permission-override privileges; the unwritable-directory arm is skipped"
-            );
-        }
-        crate::testutil::set_mode(&dir, 0o700);
-        // A later unlock writes the copy normally.
-        let s = env.unlock_with(Some(policy(
-            &env,
-            48,
-            DEFAULT_MAX_BYTES,
-            DEFAULT_MAX_AGE_SECONDS,
-        )));
-        assert!(s.snapshot_status().unwrap().published.is_some());
+        assert_eq!(s.snapshot_status().unwrap().pruned.len(), 1);
     }
 
     #[test]
     fn snapshot_listing_ignores_unauthenticated_files() {
         let env = Env::new();
         let s = env.unlock_with(Some(env.snapshot_policy()));
+        add_entry(&s, s.root().unwrap(), "kept");
         let healthy = s.snapshots().unwrap();
         assert_eq!(healthy.snapshots.len(), 1);
         assert_eq!(healthy.unreadable, 0);
@@ -1477,7 +1537,7 @@ mod tests {
         let root = s.root().unwrap();
         let e = add_entry(&s, root, "Gone");
         s.delete(crate::ItemHandle::Entry(e), false).unwrap();
-        crate::testutil::destructive(&s, || s.empty_trash()).unwrap();
+        s.empty_trash(false).unwrap();
         let report = s.verify(None).unwrap();
         assert!(report.ok(), "{report:?}");
         assert!(report.counts.suppressed_records >= 1);
@@ -1494,19 +1554,9 @@ mod tests {
     #[test]
     fn snapshot_pruning_breaks_equal_timestamps_by_archive_id() {
         let env = Env::new();
-        let day = 24_000i64;
-        let t0 = day * MILLIS_PER_DAY + 6 * 60 * 60 * MILLIS_PER_SECOND;
-        env.time.set(t0);
-        // The automatic copy and three finished recovery copies all carry the
-        // same authenticated creation time.
-        let s = env.unlock_with(Some(policy(
-            &env,
-            48,
-            DEFAULT_MAX_BYTES,
-            DEFAULT_MAX_AGE_SECONDS,
-        )));
-        let auto = s.snapshot_status().unwrap();
-        let auto_id = auto.published.clone().unwrap().archive_id;
+        let t0 = at(&env, 24_000, 6, 0);
+        // Three finished recovery files carry the same creation time.
+        let s = env.unlock_with(Some(defaults(&env)));
         let mut same_time = Vec::new();
         for _ in 0..3 {
             let snap = s.begin_destructive(false, None).unwrap();
@@ -1514,28 +1564,23 @@ mod tests {
             s.finish_destructive(snap).unwrap();
         }
         let rows = s.snapshots().unwrap().snapshots;
-        assert_eq!(rows.len(), 4, "three copies plus the automatic one");
+        assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|r| r.created_at == Timestamp(t0)));
         drop(s);
 
-        // A pass with a count budget of two keeps the two highest archive IDs
-        // of the equal-timestamp set plus its own new copy.
-        env.time.set(t0 + 60 * 60 * MILLIS_PER_SECOND);
+        // A pass with a count budget of two keeps the two highest IDs.
+        env.time.set(t0 + HOUR);
         let s = env.unlock_with(Some(policy(
             &env,
             2,
             DEFAULT_MAX_BYTES,
             DEFAULT_MAX_AGE_SECONDS,
         )));
-        let mut old = same_time;
-        old.push(auto_id);
-        old.sort();
+        same_time.sort();
         let rows = ids(&s.snapshots().unwrap());
         assert_eq!(rows.len(), 2);
-        assert!(rows.contains(&old[3]));
-        for pruned in &old[..3] {
-            assert!(!rows.contains(pruned));
-        }
+        assert!(rows.contains(&same_time[1]) && rows.contains(&same_time[2]));
+        assert!(!rows.contains(&same_time[0]));
     }
 
     #[test]
@@ -1644,7 +1689,9 @@ mod tests {
     fn snapshot_publication_failure_preserves_expired_recovery_material() {
         let env = Env::new();
         let s = env.unlock_with(Some(env.snapshot_policy()));
-        let old = s.snapshots().unwrap().snapshots[0].archive_id.clone();
+        let snap = s.begin_destructive(false, None).unwrap();
+        let old = snap.summary().archive_id.clone();
+        s.finish_destructive(snap).unwrap();
         drop(s);
         env.time.set(i64::MAX / 2);
         let configured = policy(&env, 48, DEFAULT_MAX_BYTES, 1);
@@ -1655,7 +1702,11 @@ mod tests {
         let s = core
             .unlock(&env.path, &pw(crate::testutil::PASSWORD), None)
             .unwrap();
-        assert!(s.snapshot_status().unwrap().failed);
+        // Pruning cannot proceed in an unsafe directory; nothing is removed.
+        assert!(
+            s.snapshot_status()
+                .is_none_or(|r| r.failed || r.pruned.is_empty())
+        );
         crate::testutil::set_mode(&dir, 0o700);
         assert_eq!(ids(&s.snapshots().unwrap()), vec![old]);
     }
@@ -1717,6 +1768,7 @@ mod tests {
     fn snapshot_restore_rejects_invalid_foreign_missing_and_cancelled_inputs() {
         let env = Env::new();
         let s = env.unlock_with(Some(env.snapshot_policy()));
+        add_entry(&s, s.root().unwrap(), "kept");
         let id = s.snapshots().unwrap().snapshots[0].archive_id.clone();
         let target = env.path.with_file_name("restored.qvault");
         assert_eq!(err(s.snapshot_matches("xyz")), CoreError::InvalidInput);
@@ -1750,5 +1802,34 @@ mod tests {
             err(s.restore_snapshot(&id, &target, None)),
             CoreError::SessionLocked
         );
+    }
+    #[test]
+    fn snapshot_restore_reads_the_vaults_own_snapshot_into_a_new_vault() {
+        let env = Env::new();
+        at(&env, 26_000, 9, 0);
+        let s = env.unlock_with(Some(env.snapshot_policy()));
+        let root = s.root().unwrap();
+        add_entry(&s, root, "before");
+        at(&env, 26_000, 11, 0);
+        add_entry(&s, root, "later");
+        let rows = s.snapshots().unwrap().snapshots;
+        assert_eq!(rows.len(), 2);
+        // The newest (11:00) snapshot holds "before" but not "later".
+        let id = rows[0].archive_id.clone();
+        let before = std::fs::read(&env.path).unwrap();
+        let target = env.path.with_file_name("restored.qvault");
+        s.restore_snapshot(&id, &target, None).unwrap();
+        assert_eq!(std::fs::read(&env.path).unwrap(), before);
+        assert!(!target.with_file_name("restored.qvault.qvsnap").exists());
+        let core = env.core_with(Some(env.snapshot_policy()));
+        let restored = {
+            let _k = kdf();
+            core.unlock(&target, &pw(crate::testutil::PASSWORD), None)
+                .unwrap()
+        };
+        assert_eq!(restored.search("before").unwrap().len(), 1);
+        assert!(restored.search("later").unwrap().is_empty());
+        assert!(restored.snapshots().unwrap().snapshots.is_empty());
+        assert!(restored.verify(None).unwrap().ok());
     }
 }
