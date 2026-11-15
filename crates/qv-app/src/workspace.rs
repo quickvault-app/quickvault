@@ -651,6 +651,10 @@ pub struct Workspace {
     pub(crate) report: Option<Report>,
     /// What was just moved to the trash, until the next navigation (Undo).
     pub(crate) undo: Option<Undo>,
+    /// This vault's device-view tag, and the group ID (empty: "All items")
+    /// last remembered for it (plan 0063).
+    pub(crate) view_tag: Option<String>,
+    pub(crate) view_note: Option<String>,
     /// The open attachment preview (0003 §6.4).
     pub(crate) preview: Option<crate::preview::PreviewView>,
     /// The list's multi-selection (record IDs), `None` when not selecting.
@@ -758,6 +762,8 @@ impl Workspace {
             error: None,
             report: None,
             undo: None,
+            view_tag: None,
+            view_note: None,
             preview: None,
             selection: None,
             phrase: None,

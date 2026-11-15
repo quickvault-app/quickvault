@@ -193,6 +193,9 @@ pub mod purpose {
         /// VK possession proofs for one LAN sync session (0002 §3.3,
         /// 0013 §4.6). Only [`crate::lan::ProofRoot`] uses it.
         LanProof = "lan-proof";
+        /// Seals small per-device UI notes kept outside the vault file, and
+        /// MACs their lookup tag (0002 §3.3, plan 0063).
+        DeviceView = "device-view";
     }
 }
 
@@ -434,8 +437,8 @@ macro_rules! mac_purposes {
     )+};
 }
 
-aead_purposes!(Manifest, LocalState);
-mac_purposes!(HeaderMac, StateCommit, LocalState);
+aead_purposes!(Manifest, LocalState, DeviceView);
+mac_purposes!(HeaderMac, StateCommit, LocalState, DeviceView);
 
 /// Computes a MAC under `profile`.
 pub fn mac(key: &impl MacKey, profile: MacProfile, msg: &[u8]) -> Result<MacTag, CryptoError> {
@@ -506,7 +509,8 @@ mod tests {
             DeviceStorage,
             RecoveryEd25519,
             RecoveryMlDsa65,
-            LanProof
+            LanProof,
+            DeviceView
         )
     }
 
@@ -530,6 +534,7 @@ mod tests {
                 "recovery-ed25519",
                 "recovery-mldsa65",
                 "lan-proof",
+                "device-view",
             ]
         );
     }

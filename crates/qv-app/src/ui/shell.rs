@@ -492,7 +492,7 @@ pub(crate) fn Shell(controller: Controller, view: ShellView, palette: Signal<boo
                 }
             }
             if vault_screen {
-                items::ListPane { controller: controller.clone(), epoch, revision, list: context.clone(), screen: screen.clone(), busy, conflicts }
+                items::ListPane { controller: controller.clone(), epoch, revision, list: context.clone(), screen: screen.clone(), busy, conflicts, top_groups: groups.to_vec() }
                 items::Detail { controller: controller.clone(), epoch, revision, screen: screen.clone(), live, busy, report: report.clone() }
             } else {
                 pages::Page { controller: controller.clone(), epoch, revision, screen: screen.clone(), live, busy, report: report.clone() }

@@ -286,6 +286,14 @@ release, but no longer gates the feature.
   §4. Versions with no visible difference say so, and each stays choosable.
   Resolving still chooses one complete version (0005 §2.5). A conflicted entry's page and every item list
   with conflicts link to the comparison (plan 0045).
+- **Groups and the last group** (owner, 2026-11-15; plan 0063). Where the
+  sidebar lists no groups (phones, narrow windows), "All items" and every
+  group offer the top-level groups as chips to switch directly; the current
+  one is marked, and choosing it again returns to "All items". Unlocking a vault opens the group it last
+  showed on this device, or "All items" when that group is gone. The app
+  keeps this per device in its own data directory, sealed under the vault's
+  `device-view` key (0002 §3.3): without VK the file names no vault and
+  holds no readable vault data, and a key rotation forgets it.
 - **Quick unlock first** (owner, 2026-11-07; plan 0045). Where quick unlock
   is enrolled for the selected vault, the locked screen offers it first: the
   system prompt opens by itself when the app starts or returns to the
@@ -602,6 +610,8 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
 
 ## Changelog
 
+- 2026-11-15: §1.8: group chips on narrow layouts; the last group per vault,
+  kept per device and sealed under `device-view` (owner request, plan 0063).
 - 2026-11-15: §1.8 conflict comparison: field names, types, hidden settings
   and order count as visible differences; every version stays choosable
   (owner QA, plan 0062).

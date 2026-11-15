@@ -1089,7 +1089,7 @@ mod tests {
         let c = p.controller;
         let epoch = c.snapshot().epoch;
         let screen = c.screen(epoch).unwrap();
-        rsx! { items::ListPane { controller: c.clone(), epoch, revision: c.snapshot().revision, list: crate::workspace::Screen::Browse(None), screen, busy: false, conflicts: 0 } }
+        rsx! { items::ListPane { controller: c.clone(), epoch, revision: c.snapshot().revision, list: crate::workspace::Screen::Browse(None), screen, busy: false, conflicts: 0, top_groups: Vec::new() } }
     }
 
     #[test]

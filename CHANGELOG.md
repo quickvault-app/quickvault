@@ -9,6 +9,13 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Changed
 
+- 2026-11-15: Groups on the phone, and the last group remembered (owner
+  request, plan 0063). "All items" and every group show the vault's
+  top-level groups as chips where the sidebar does not (phones, narrow
+  windows); the current one is marked, and tapping it again shows all items. Unlocking a vault opens
+  the group it last showed on this device. The app keeps that in a small
+  `views` file, sealed under a new `device-view` key derived from the vault
+  key, so the file names no vault and holds no readable vault data.
 - 2026-11-15: Known WebKitGTK limits are tracked in `crates/qv-app/WEBKIT.md`
   (symptom, response, what to revisit on an engine or framework change),
   linked from the app README, `ARCHITECTURE.md` §6 and the AGENTS.md

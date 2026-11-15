@@ -205,6 +205,7 @@ input::-webkit-caps-lock-indicator{display:none;content:none}
 .filter{margin:0 12px 8px;height:32px;display:flex;align-items:center;gap:8px;padding:0 10px;border-radius:9px;background:var(--raised);color:var(--text3)}
 .filter input{flex:1;min-width:0;border:0;background:none;height:100%}
 .subgroups{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 8px}
+.root-groups{display:none}
 .rows{flex:1;overflow-y:auto;padding:0 8px 12px}
 .sect{font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.05em;padding:10px 8px 4px}
 .row{position:relative;display:flex;align-items:center;gap:11px;width:100%;padding:8px;border:0;border-radius:10px;background:none;text-align:left;margin-bottom:1px;
@@ -328,8 +329,9 @@ input::-webkit-caps-lock-indicator{display:none;content:none}
 .chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);background:var(--raised);border-radius:999px;padding:4px 10px;font-size:12.5px;color:var(--text2);
   transition:border-color .18s,background .18s,color .18s,transform .12s}
 .chip:active:enabled{transform:scale(.95)}
-.chip:hover:enabled{border-color:var(--text3);color:var(--text)}
-.chip.on{border-color:var(--accent);color:var(--accent);background:var(--soft)}
+/* Touch screens keep a tapped chip "hovered"; only real hover styles it, and a selected chip keeps its colour (plan 0063). */
+@media (hover:hover){.chip:hover:enabled{border-color:var(--text3);color:var(--text)}}
+.chip.on,.chip.on:hover:enabled{border-color:var(--accent);color:var(--accent);background:var(--soft)}
 .chip.danger{color:var(--danger)}
 .savebar{position:sticky;bottom:16px;margin:18px auto 0;width:max-content;max-width:100%;display:flex;align-items:center;gap:10px;padding:8px 8px 8px 16px;border-radius:14px;
   background:var(--panel);border:1px solid var(--line);box-shadow:var(--pop);animation:rise .2s ease-out;z-index:3;flex-wrap:wrap}
@@ -473,6 +475,8 @@ button.set-row:hover:enabled{background:var(--raised)}
 /* ===== Layouts by width (one DOM) ===== */
 .tabbar,.phone-head,.fab,.back{display:none}
 @container app (max-width: 980px){
+  .root-groups{display:flex;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+  .root-groups .chip{flex:none}
   .shell{grid-template-columns:64px 290px minmax(0,1fr)}
   .shell.nolist{grid-template-columns:64px minmax(0,1fr)}
   .side .h,.nav .t,.nav .n,.nav .badge,.side .grp-item,.side .h button{display:none}

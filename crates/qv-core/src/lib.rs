@@ -124,6 +124,7 @@
 
 mod attachment;
 mod credentials;
+mod device_view;
 mod edit;
 mod error;
 mod history;
@@ -145,6 +146,7 @@ mod testutil;
 mod view_cache;
 mod views;
 
+pub use device_view::{DEVICE_VIEW_NOTE_MAX, DEVICE_VIEW_SEALED_MAX};
 pub use edit::{EntryDraft, GroupDraft, MAX_BATCH, PurgeReport};
 pub use error::CoreError;
 pub use paging::{

@@ -630,6 +630,8 @@ pub(crate) struct Inner {
     watch: Mutex<Option<Box<dyn Watch>>>,
     /// Non-secret app preferences (0009 §1.8).
     prefs: Mutex<crate::prefs::Prefs>,
+    /// Each vault's last group on this device, sealed (plan 0063).
+    views: Mutex<crate::last_view::Views>,
     /// Remembered vaults and the default folder (0009 §1.8, plan 0041).
     vaults: Mutex<crate::vaults::VaultList>,
     /// The vault the locked screen opens; survives form resets and lock.
@@ -731,6 +733,7 @@ impl Controller {
             monitoring: AtomicBool::new(false),
             watch: Mutex::new(None),
             prefs: Mutex::new(crate::prefs::Prefs::load(&base)),
+            views: Mutex::new(crate::last_view::Views::load(&base)),
             vaults: Mutex::new(crate::vaults::VaultList::load(&base)),
             selected: Mutex::new(None),
             ack_cache: Mutex::new(None),
@@ -1183,6 +1186,7 @@ impl Controller {
         if self.0.working.load(Ordering::SeqCst) {
             return;
         }
+        self.record_view();
         let (offer, epoch) = {
             let mut s = self.state();
             let offer = if s.phase == Phase::Unlocked {
@@ -1618,7 +1622,7 @@ impl Controller {
             s.epoch = s.epoch.wrapping_add(1);
             s.phase = Phase::Unlocked;
             s.status = "Vault ready";
-            enter_workspace(&mut s);
+            enter_workspace(&mut s, &self.views());
             return Ok(());
         }
         if matches!(action, Action::SkipPhrase | Action::AdoptBaseline) {
@@ -1657,7 +1661,7 @@ impl Controller {
                                 s.phase = Phase::Unlocked;
                                 s.status = "Vault ready";
                                 s.error = None;
-                                enter_workspace(&mut s);
+                                enter_workspace(&mut s, &controller.views());
                             }
                             Err(e) => {
                                 s.error = Some(e.into());
@@ -2009,7 +2013,7 @@ impl Controller {
                     "Vault ready"
                 };
                 s.session = Some(Arc::new(session));
-                enter_workspace(&mut s);
+                enter_workspace(&mut s, &self.views());
                 if importing
                     && remember_failed
                     && let Some(ws) = &mut s.workspace
@@ -2223,13 +2227,69 @@ impl Controller {
 }
 /// Open the unlocked screens once a writable session is ready. A phrase
 /// unlock first offers (never forces) a new master password, as `recover` does.
-fn enter_workspace(s: &mut State) {
+/// Opens on the group this vault last showed on this device, if it is still
+/// live (plan 0063); otherwise on "All items".
+fn enter_workspace(s: &mut State, views: &crate::last_view::Views) {
     if s.phase == Phase::Unlocked && s.workspace.is_none() {
-        s.workspace = Some(crate::workspace::Workspace::new(s.recovered_with_phrase));
+        let mut ws = crate::workspace::Workspace::new(s.recovered_with_phrase);
+        if let Some(session) = s.session.clone() {
+            ws.view_tag = session.device_view_tag().ok();
+            ws.view_note = Some(String::new());
+            if ws.screen == crate::workspace::Screen::Browse(None)
+                && let Some((id, group)) = crate::last_view::restore(&session, views)
+            {
+                ws.screen = crate::workspace::Screen::Browse(Some(group));
+                ws.view_note = Some(id);
+                crate::ops::on_enter(&mut ws, &session);
+            }
+        }
+        s.workspace = Some(ws);
         s.revision = s.revision.wrapping_add(1);
     }
 }
 impl Controller {
+    /// The remembered views (lock order: state, then views).
+    fn views(&self) -> std::sync::MutexGuard<'_, crate::last_view::Views> {
+        self.0
+            .views
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// Remembers the group the unlocked vault shows, when it changed (plan
+    /// 0063): "All items" or a group, not a type or search list. The file is
+    /// written outside the state lock; a failed write keeps it in memory.
+    fn record_view(&self) {
+        let saved = {
+            let mut s = self.state();
+            if s.phase != Phase::Unlocked {
+                return;
+            }
+            let Some(session) = s.session.clone() else {
+                return;
+            };
+            let Some(ws) = s.workspace.as_mut() else {
+                return;
+            };
+            let crate::workspace::Screen::Browse(group) = ws.list_context() else {
+                return;
+            };
+            let note = group.map(|g| g.id_hex()).unwrap_or_default();
+            if ws.view_note.as_deref() == Some(note.as_str()) {
+                return;
+            }
+            let Some(tag) = ws.view_tag.clone() else {
+                return;
+            };
+            let Ok(sealed) = session.seal_device_view(note.as_bytes()) else {
+                return;
+            };
+            ws.view_note = Some(note);
+            let mut views = self.views();
+            views.put(&tag, sealed);
+            views.clone()
+        };
+        let _ = saved.save(&self.0.base);
+    }
     fn qr_form(s: &State, target: crate::qr::QrTarget) -> bool {
         use crate::qr::QrTarget;
         match target {

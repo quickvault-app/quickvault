@@ -2325,3 +2325,73 @@ fn conflict_compare_shows_a_renamed_field() {
     names.sort();
     assert_eq!(names[0], "Account");
 }
+
+// Plan 0063: the group a vault last showed opens again after a lock (and a
+// restart: the controller reloads the sealed `views` file), the file holds
+// no readable group ID, and a deleted group falls back to "All items".
+#[test]
+fn the_last_group_reopens_after_unlock() {
+    let _k = KDF.lock().unwrap_or_else(|p| p.into_inner());
+    let env = Env::unlocked();
+    let root = env.read(|s| s.root());
+    env.act(WsAction::NewGroup(root));
+    env.act(WsAction::SaveGroup);
+    let Screen::Browse(Some(group)) = env.screen() else {
+        panic!("{:?}", env.screen())
+    };
+    let id = group.id_hex();
+    env.c.pump();
+    let file = std::fs::read_to_string(env.dir.join("views")).unwrap();
+    assert_eq!(file.lines().count(), 1);
+    assert!(!file.contains(&id), "sealed, not stored in clear");
+    env.c.lock();
+    env.unlock(PASSWORD);
+    let Screen::Browse(Some(again)) = env.screen() else {
+        panic!("{:?}", env.screen())
+    };
+    assert_eq!(again.id_hex(), id);
+    // A fresh controller (an app restart) reads the file.
+    let restarted = Env::reopen(&env);
+    let Screen::Browse(Some(after)) = restarted.screen() else {
+        panic!("{:?}", restarted.screen())
+    };
+    assert_eq!(after.id_hex(), id);
+    // "All items" is remembered too.
+    restarted
+        .c
+        .navigate(restarted.epoch(), Screen::Browse(None));
+    restarted.c.pump();
+    restarted.c.lock();
+    restarted.unlock(PASSWORD);
+    assert_eq!(restarted.screen(), Screen::Browse(None));
+    // A group that is gone opens "All items".
+    let g = match restarted.read(|s| s.find_id(&id, false)).as_slice() {
+        [qv_core::ItemHandle::Group(g)] => *g,
+        other => panic!("{other:?}"),
+    };
+    restarted
+        .c
+        .navigate(restarted.epoch(), Screen::Browse(Some(g)));
+    restarted.c.pump();
+    restarted.act(WsAction::Delete(qv_core::ItemHandle::Group(g)));
+    restarted.act(WsAction::Answer(true));
+    restarted.c.lock();
+    restarted.unlock(PASSWORD);
+    assert_eq!(restarted.screen(), Screen::Browse(None));
+}
+
+impl Env {
+    /// An app restart: lock this controller, start another on the same app
+    /// directory, and unlock (plan 0063).
+    fn reopen(env: &Env) -> Env {
+        env.c.lock();
+        let c = Controller::new(env.dir.clone(), Arc::new(Platform(env.os.clone()))).unwrap();
+        let restarted = Env {
+            c,
+            os: env.os.clone(),
+            dir: env.dir.clone(),
+        };
+        restarted.unlock(PASSWORD);
+        restarted
+    }
+}

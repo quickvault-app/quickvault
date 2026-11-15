@@ -12,6 +12,7 @@ mod editor_tests;
 pub mod lan;
 #[cfg(test)]
 mod lan_tests;
+mod last_view;
 mod ops;
 // Native UI read workers are exercised headlessly in tests, but unused in the headless library.
 #[cfg_attr(not(feature = "desktop"), allow(dead_code))]

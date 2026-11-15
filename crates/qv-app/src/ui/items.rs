@@ -213,6 +213,8 @@ pub(crate) fn ListPane(
     screen: Screen,
     busy: bool,
     conflicts: usize,
+    /// The vault's top-level groups (the sidebar's), for the phone's chips.
+    top_groups: Vec<views::GroupRow>,
 ) -> Element {
     let _ = revision;
     let fallback = use_signal(|| false);
@@ -554,6 +556,29 @@ pub(crate) fn ListPane(
                 Input { controller: controller.clone(), epoch, field: WsField::Query, label: if list == Screen::Search { "Search the vault".to_owned() } else { format!("Filter {}", title.to_lowercase()) },
                     placeholder: if list == Screen::Search { "Search titles, usernames, websites".to_owned() } else { format!("Filter {}", title.to_lowercase()) },
                     kind: super::items::Kind::Line, value: Some(query.to_string()), disabled: form, bare: true, autofocus: list == Screen::Search }
+            }
+            // Where the sidebar lists no groups (phone, narrow window), "All
+            // items" and every group show the top-level groups as chips, the
+            // current one marked; tapping it again deselects it, back to "All
+            // items" (CSS shows them there, plan 0063).
+            if matches!(list, Screen::Browse(_)) && !top_groups.is_empty() {
+                {
+                    let inside = group_view.as_ref().map(|v| v.crumbs.iter().map(|c| c.0).collect::<Vec<_>>()).unwrap_or_default();
+                    rsx! {
+                        div { class: "subgroups root-groups", role: "group", "aria-label": "Groups",
+                            for g in top_groups.iter().cloned() {
+                                {
+                                    let on = inside.contains(&g.handle);
+                                    let to = if on { Screen::Browse(None) } else { Screen::Browse(Some(g.handle)) };
+                                    rsx! {
+                                        button { class: if on { "chip on" } else { "chip" }, disabled: form, "aria-pressed": if on { "true" } else { "false" },
+                                            onclick: go(&controller, epoch, to), Svg { icon: Icon::Folder } "{g.name.as_str()}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if let Some(v) = group_view.as_ref() {
                 if !v.groups.is_empty() {

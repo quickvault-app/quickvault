@@ -107,6 +107,7 @@ derivation_profile]`.
 | recovery-ed25519 | Independent Ed25519 recovery-key seed |
 | recovery-mldsa65 | Independent ML-DSA-65 recovery-key seed |
 | lan-proof | VK possession proofs for one LAN sync session (0013 §4.6, §4.8) |
+| device-view | Seal small per-device UI notes kept outside the vault file (the last opened group) and MAC their lookup tag (0009 §1.8; plan 0063) |
 
 Labels are never reused. Algorithm-specific seeds are separate derivations;
 do not reuse one signature algorithm's seed for another.
@@ -323,6 +324,7 @@ password guessing and device compromise are separate from vault encryption.
 
 ## Changelog
 
+- 2026-11-15: §3.3: purpose label `device-view` for per-device UI notes kept outside the vault file (owner request, plan 0063).
 - 2026-11-09: Add owner-approved lan/2 and ephemeral lan-pake/1; retain storage profiles.
 
 - 2026-11-07: §5.4: quick-unlock policy state may survive app restarts when
