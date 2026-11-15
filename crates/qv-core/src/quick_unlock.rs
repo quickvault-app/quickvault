@@ -12,6 +12,28 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
+/// Which step refused the last quick unlock (plan 0063). No secret: it only
+/// says why fingerprint unlock had to be turned off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuickFailure {
+    /// The phone's key store refused or lost its key.
+    Keystore,
+    /// The released key did not open the vault.
+    Open,
+    /// The vault's rollback record (anchor) is missing, damaged or behind.
+    Anchor,
+    /// The vault, its key generation or its password keyslot changed since
+    /// enrollment.
+    Binding,
+    /// The device's protection checks refused the session.
+    Platform,
+    /// No live enrollment: nothing to unlock with.
+    NotEnrolled,
+    /// The vault file's header names another vault or key generation.
+    OtherVault,
+    /// The vault file's header could not be read when checked.
+    Unreadable,
+}
 fn binding(ctx: &crate::session::Ctx<'_>) -> Result<QuickBinding, CoreError> {
     let header = ctx.open.vault.header();
     let id = ctx.open.vault.manifest().keyslot_id();
@@ -97,38 +119,81 @@ impl Core {
         };
         same_vault(path, binding)
     }
+    /// Why the last quick unlock failed, if it did.
+    pub fn quick_failure(&self) -> Option<QuickFailure> {
+        *self
+            .quick_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    fn note_quick(&self, failure: Option<QuickFailure>) {
+        *self
+            .quick_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = failure;
+    }
     /// Explicit hardware-authenticated open; never falls back to recovery/password.
     pub fn unlock_quick(
         &self,
         path: &Path,
         cancel: Option<&CancelToken>,
     ) -> Result<Session, CoreError> {
-        self.platform_gate()?;
-        let services = self.quick_services()?;
-        let expected = services.keystore().binding().ok_or(CoreError::NotAllowed)?;
+        // Steps before the prompt record why they refused too (plan 0063).
+        let early = |failure: QuickFailure, e: CoreError| {
+            self.note_quick(Some(failure));
+            e
+        };
+        self.platform_gate()
+            .map_err(|e| early(QuickFailure::Platform, e))?;
+        let services = self
+            .quick_services()
+            .map_err(|e| early(QuickFailure::Platform, e))?;
+        let expected = services
+            .keystore()
+            .binding()
+            .ok_or_else(|| early(QuickFailure::NotEnrolled, CoreError::NotAllowed))?;
         // Another vault: refuse before prompting, keeping the enrollment.
-        if !same_vault(path, expected) {
-            return Err(CoreError::NotAllowed);
+        match qv_store::VaultFile::open(path) {
+            Err(_) => return Err(early(QuickFailure::Unreadable, CoreError::NotAllowed)),
+            Ok(f) => {
+                let h = f.header();
+                if h.vault_id.0 != expected.vault || h.key_generation.0 != expected.generation {
+                    return Err(early(QuickFailure::OtherVault, CoreError::NotAllowed));
+                }
+            }
         }
         let token = cancel.cloned();
         let cancelled: qv_platform::Cancellation =
             Arc::new(move || token.as_ref().is_some_and(CancelToken::is_cancelled));
         // The keystore counts attempts and destroys its own state on
         // lockouts and lost keys; a dismissal keeps the enrollment.
-        let phrase = services
+        self.note_quick(None);
+        let phrase = match services
             .keystore()
             .unlock_bound(expected, cancelled.clone())
-            .map_err(crate::platform::error)?;
+        {
+            Ok(phrase) => phrase,
+            Err(e) => {
+                let e = crate::platform::error(e);
+                if !matches!(e, CoreError::Cancelled) {
+                    self.note_quick(Some(QuickFailure::Keystore));
+                }
+                return Err(e);
+            }
+        };
+        let mut step = QuickFailure::Open;
         let result = (|| {
             let (vault, status, index) = self.open(path, cancel, |f, b| {
                 f.unlock_with_phrase_into(phrase.expose_secret(), &self.anchors, b)
             })?;
+            step = QuickFailure::Anchor;
             match status {
                 AnchorStatus::Missing => return Err(StoreError::NoAnchor.into()),
                 AnchorStatus::Damaged => return Err(StoreError::DamagedAnchor.into()),
                 AnchorStatus::Mismatch => return Err(StoreError::Rollback.into()),
                 _ => {}
             }
+            step = QuickFailure::Open;
             let session = Session::open_built(
                 vault,
                 index,
@@ -137,9 +202,11 @@ impl Core {
                 self.snapshots.clone(),
                 false,
             )?;
+            step = QuickFailure::Binding;
             if session.read(|ctx| binding(ctx))? != expected || cancelled() {
                 return Err(CoreError::NotAllowed);
             }
+            step = QuickFailure::Platform;
             let session = self.bind_platform(session)?;
             session.run_automatic_snapshot(cancel);
             Ok(session)
@@ -149,6 +216,7 @@ impl Core {
             .as_ref()
             .is_err_and(|e| !matches!(e, CoreError::Cancelled))
         {
+            self.note_quick(Some(step));
             let _ = services.keystore().invalidate();
         }
         result

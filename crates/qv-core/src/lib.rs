@@ -154,6 +154,7 @@ pub use paging::{
     ViewCursor, ViewPage, type_bucket,
 };
 pub use path::ViewPath;
+pub use quick_unlock::QuickFailure;
 pub use rotation::{ROTATION_CONFIRMATIONS, Rotation, RotationError, RotationOutcome};
 pub use session::{CancelToken, EntryHandle, FieldHandle, GroupHandle, ItemHandle, Session};
 pub use settings::{SettingsDraft, estimate, generate};

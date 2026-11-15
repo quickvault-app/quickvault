@@ -162,6 +162,8 @@ pub struct Core {
     process: ProcessHardening,
     pub(crate) snapshots: Option<Arc<SnapshotPolicy>>,
     pub(crate) platform: Option<crate::platform::PlatformPolicy>,
+    /// Why the last quick unlock failed, for the user's message (plan 0063).
+    pub(crate) quick_failure: std::sync::Mutex<Option<crate::QuickFailure>>,
 }
 
 impl core::fmt::Debug for Core {
@@ -188,6 +190,7 @@ impl Core {
             process: harden().process,
             snapshots: config.snapshots.map(Arc::new),
             platform: None,
+            quick_failure: std::sync::Mutex::new(None),
         }
     }
 

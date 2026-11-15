@@ -2395,3 +2395,30 @@ impl Env {
         restarted
     }
 }
+
+// Plan 0063: notes copy through the app's clipboard (browser copies are
+// cancelled), and not while the entry is conflicted.
+#[test]
+fn notes_copy_through_the_app_clipboard() {
+    let _k = KDF.lock().unwrap_or_else(|p| p.into_inner());
+    let env = Env::unlocked();
+    let e = env.add_entry("With notes", SECRET);
+    env.act(WsAction::EditEntry(e));
+    env.put(
+        WsField::Notes,
+        "a note with averyveryverylongwordthatmustwrap",
+    );
+    env.act(WsAction::SaveEntry);
+    assert_eq!(env.error(), None);
+    env.act(WsAction::Copy(CopyKey::Notes(e)));
+    assert_eq!(env.error(), None);
+    let end = Instant::now() + Duration::from_secs(5);
+    while env.os.holds.lock().unwrap().is_empty() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let holds = env.os.holds.lock().unwrap();
+    assert_eq!(
+        holds.last().map(Vec::as_slice),
+        Some(&b"a note with averyveryverylongwordthatmustwrap"[..])
+    );
+}

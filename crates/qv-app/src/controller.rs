@@ -174,10 +174,36 @@ pub enum AppError {
     /// A LAN code or address that cannot be used (missing, malformed, or a
     /// typed code without an address).
     LanInput,
-    /// Quick unlock failed; it may still work (plan 0045).
-    QuickFailed,
-    /// Quick unlock failed and is off until a password unlock.
-    QuickEnded,
+    /// Quick unlock failed; it may still work (plan 0045), with the step
+    /// that refused it when known (plan 0063).
+    QuickFailed(Option<qv_core::QuickFailure>),
+    /// Quick unlock failed and is off until a password unlock, with the
+    /// step that refused it when known (plan 0063).
+    QuickEnded(Option<qv_core::QuickFailure>),
+}
+/// A quick unlock message: its base sentence and the refusing step's reason.
+macro_rules! quick_message {
+    ($base:literal, $why:expr) => {{
+        use qv_core::QuickFailure as Q;
+        match $why {
+            Some(Q::Keystore) => concat!($base, " The phone's key store refused its key."),
+            Some(Q::Open) => concat!($base, " Its key no longer opens this vault."),
+            Some(Q::Anchor) => concat!($base, " The vault's rollback record did not match."),
+            Some(Q::Binding) => concat!(
+                $base,
+                " The vault's password record changed since it was set up."
+            ),
+            Some(Q::Platform) => concat!($base, " This device's protection checks refused it."),
+            Some(Q::NotEnrolled) => concat!($base, " It is no longer set up on this device."),
+            Some(Q::OtherVault) => {
+                concat!($base, " It was set up for another vault or key generation.")
+            }
+            Some(Q::Unreadable) => {
+                concat!($base, " The vault file could not be read when checked.")
+            }
+            None => $base,
+        }
+    }};
 }
 impl AppError {
     /// Fixed user-facing text.
@@ -276,12 +302,15 @@ impl AppError {
             Self::PreviewUnavailable => {
                 "This file can't be previewed. Save a copy to open it elsewhere."
             }
-            Self::QuickFailed => {
-                "Fingerprint unlock didn't work. Try again, or use your master password."
-            }
-            Self::QuickEnded => {
-                "Fingerprint unlock is off until you unlock with your master password."
-            }
+            // The step that refused quick unlock, when known (plan 0063).
+            Self::QuickFailed(why) => quick_message!(
+                "Fingerprint unlock didn't work. Try again, or use your master password.",
+                why
+            ),
+            Self::QuickEnded(why) => quick_message!(
+                "Fingerprint unlock is off until you unlock with your master password.",
+                why
+            ),
         }
     }
 }
@@ -1899,8 +1928,10 @@ impl Controller {
                 Ok(session) => Ok(Opened::Session(session, path, false, about, None)),
                 // A dismissal shows nothing: the password field is ready.
                 Err(CoreError::Cancelled) => Err(AppError::Core(CoreError::Cancelled)),
-                Err(_) if core.quick_ready_for(&path) => Err(AppError::QuickFailed),
-                Err(_) => Err(AppError::QuickEnded),
+                // The enrollment itself decides (plan 0063): re-reading the
+                // vault header here could fail and wrongly say "off".
+                Err(_) if core.quick_ready() => Err(AppError::QuickFailed(core.quick_failure())),
+                Err(_) => Err(AppError::QuickEnded(core.quick_failure())),
             },
             Action::Unlock | Action::RecoverPassword => {
                 let password =

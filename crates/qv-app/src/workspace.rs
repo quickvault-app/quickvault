@@ -289,6 +289,9 @@ pub enum CopyKey {
     Totp(EntryHandle, FieldHandle),
     /// The generator's latest value.
     Generated,
+    /// The notes of a non-conflicted entry (plan 0063: the page cancels
+    /// browser copies, so notes need their own button).
+    Notes(EntryHandle),
 }
 /// Generator mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -109,3 +109,32 @@ chips; the last group per vault, encrypted per-device note).
   on the chips (owner report), Trash (Settings, Vault). Still missing:
   type filters (Logins, Cards, …) and the full search of usernames and
   websites (command bar); proposed to the owner.
+- 2026-11-15: owner QA: notes cut long words (`.notes` lacked
+  `overflow-wrap:anywhere`) and could not be copied (app.js cancels
+  `copy`/`cut` so the clipboard goes through Rust with auto-clear): new
+  `CopyKey::Notes` and a Copy button on the current version's Notes card.
+  Card rows showed user/key copy buttons (first plain and first protected
+  field): they now show one copy button with a menu of the card's fields
+  (names and icons only, no values), each copied as `CopyKey::Field`;
+  quick-button styles scoped to direct buttons so the menu keeps its own.
+- 2026-11-15: owner report: right after a successful fingerprint scan (no
+  restart, no new fingerprint, no failed scan) the app said "Fingerprint
+  unlock is off until you unlock with your master password." That message
+  means the scan released the key and a later step refused it, which then
+  invalidates the enrollment; the step was not recorded. Core now records
+  `QuickFailure` (Keystore, Open, Anchor, Binding, Platform) and the message
+  names it. Leading hypothesis, unconfirmed: the binding includes the
+  password-keyslot version, a synced record, so a sync that brings another
+  keyslot version (the owner synced and resolved a conflict that day)
+  would read as Binding. Next occurrence's message decides. Test
+  `notes_copy_through_the_app_clipboard` added.
+- 2026-11-15: it recurred on the new build with no reason sentence, so the
+  refusal happened before the prompt step (the reason was recorded only
+  from there). Pre-prompt steps now record reasons too (Platform,
+  NotEnrolled, OtherVault, Unreadable), both messages carry the reason, and
+  "didn't work" vs "off" is decided by the live enrollment
+  (`quick_ready`) rather than by re-reading the vault header
+  (`quick_ready_for`), which could fail transiently and wrongly say "off".
+- 2026-11-15: owner: fingerprint unlock worked on this build. Root cause not
+  confirmed; the likeliest was the transient header read misreported as
+  "off". A recurrence now names its step.

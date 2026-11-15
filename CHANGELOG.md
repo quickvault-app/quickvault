@@ -1015,6 +1015,17 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Fixed
 
+- 2026-11-15: When fingerprint unlock has to be turned off, the message says
+  why: the phone's key store refused its key, the key no longer opens the
+  vault, the rollback record did not match, the vault's password record
+  changed since setup, or the device's protection checks refused it (owner
+  report of an unexplained "Fingerprint unlock is off" after a successful
+  scan; plan 0063).
+- 2026-11-15: Notes wrap long words instead of cutting them off, and have a
+  Copy button (the app cancels browser copies so that every copy goes
+  through its self-clearing clipboard). Card rows offer one copy button
+  that lists the card's fields (name, number, expiry, security code)
+  instead of "username" and "password" buttons (owner QA, plan 0063).
 - 2026-11-15: Phone and sync polish from owner QA (plan 0062): Android Back
   now cancels the sync code window (it used to ask to close the app); once
   the other device connects, the code window says "Connected to another

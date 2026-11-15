@@ -313,6 +313,15 @@ pub(crate) fn run(
                             let (g, _) = ws.generated.as_ref().ok_or(AppError::InvalidInput)?;
                             protect(g.expose_secret().as_bytes())?
                         }
+                        CopyKey::Notes(entry) => {
+                            if session.entry_version_count(*entry)? > 1 {
+                                return Err(AppError::Conflict);
+                            }
+                            let notes = crate::views::entry(session, *entry)?
+                                .notes
+                                .ok_or(AppError::InvalidInput)?;
+                            protect(notes.as_bytes())?
+                        }
                     };
                     let session = (!matches!(key, CopyKey::Generated)).then(|| session.clone());
                     Ok((value, session))

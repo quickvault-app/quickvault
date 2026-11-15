@@ -223,6 +223,8 @@ pub(crate) fn ListPane(
     // Plan 0044: multi-select (record ids) and the open row menu.
     let mut anchor = use_signal(|| None::<String>);
     let mut row_menu = use_signal(|| None::<String>);
+    // A card row's copy menu (record id), plan 0063.
+    let mut copy_menu = use_signal(|| None::<String>);
     let mut bar_pop = use_signal(|| None::<BarPop>);
     let form = screen.is_form() || busy;
     let current = match &screen {
@@ -317,6 +319,52 @@ pub(crate) fn ListPane(
                 .and_then(Result::ok);
             if let Some(h) = handles.and_then(|(u, p)| if secret { p } else { u }) {
                 c.act(epoch, WsAction::Copy(CopyKey::Field(e, h)));
+            }
+        }
+    };
+    // A card row's copy button and, while open, its menu of the card's
+    // fields (no values shown): each copies through the app's clipboard.
+    let card_copy = |id: String, h: EntryHandle| -> Element {
+        let open = copy_menu().as_deref() == Some(id.as_str());
+        let fields = if open {
+            controller
+                .read(epoch, |s| views::entry(s, h))
+                .and_then(Result::ok)
+                .map(|v| v.fields)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let icon = |f: &FieldRow| {
+            if f.name.as_str() == crate::editor::CARD_NUMBER {
+                Icon::Card
+            } else if f.name.as_str() == crate::editor::EXPIRES {
+                Icon::Clock
+            } else if f.protected {
+                Icon::Shield
+            } else {
+                Icon::User
+            }
+        };
+        rsx! {
+            span { class: if open { "quick open" } else { "quick" },
+                span { class: "pop-anchor",
+                    button { "aria-label": "Copy a card detail", title: "Copy…", "aria-haspopup": "menu", "aria-expanded": if open { "true" } else { "false" }, disabled: form,
+                        onclick: { let id = id.clone(); move |e: MouseEvent| { e.stop_propagation(); copy_menu.set(if copy_menu().as_deref() == Some(id.as_str()) { None } else { Some(id.clone()) }); } },
+                        Svg { icon: Icon::Copy }
+                    }
+                    if open {
+                        button { class: "pop-scrim", "aria-label": "Close menu", tabindex: "-1", onclick: move |e: MouseEvent| { e.stop_propagation(); copy_menu.set(None); } }
+                        div { class: "menu pop end", role: "menu", "aria-label": "Copy",
+                            for f in fields.iter().filter(|f| f.kind != FieldKind::Totp) {
+                                button { class: "mi", role: "menuitem",
+                                    onclick: { let c = controller.clone(); let fh = f.handle; move |e: MouseEvent| { e.stop_propagation(); copy_menu.set(None); c.act(epoch, WsAction::Copy(CopyKey::Field(h, fh))); } },
+                                    Svg { icon: icon(f) } "Copy {f.name.as_str()}"
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     };
@@ -644,7 +692,11 @@ pub(crate) fn ListPane(
                                 span { if row.subtitle.is_empty() { "{kind_label(row.kind)}" } else { "{row.subtitle.as_str()}" } }
                             }
                             if row.conflict { span { class: "cbadge", "conflict" } }
-                            if !in_selection {
+                            if !in_selection && row.kind == "card" {
+                                // Cards: one copy button listing the card's
+                                // fields in checkout order (plan 0063).
+                                {card_copy(id.clone(), h)}
+                            } else if !in_selection {
                             span { class: "quick",
                                 if !row.subtitle.is_empty() { button { "aria-label": "Copy the first field", title: "Copy {row.subtitle.as_str()}", disabled: form, onclick: quick(row.handle, false), Svg { icon: Icon::User } } }
                                 button { "aria-label": "Copy the protected field", title: "Copy password", disabled: form, onclick: quick(row.handle, true), Svg { icon: Icon::Key } }
@@ -919,7 +971,14 @@ fn EntryBody(
             }
         }
         if let Some(n) = &view.notes {
-            div { class: "card", div { class: "card-h", "NOTES" } pre { class: "notes", "{n.as_str()}" } }
+            div { class: "card",
+                div { class: "card-h", "NOTES"
+                    // Browser copies are cancelled; notes copy through the
+                    // app's clipboard, which clears itself (plan 0063).
+                    if current { button { class: "link", id: "notes-copy", onclick: act(&controller, epoch, WsAction::Copy(CopyKey::Notes(view.handle))), Svg { icon: Icon::Copy } "Copy" } }
+                }
+                pre { class: "notes", "{n.as_str()}" }
+            }
         }
     }
 }
