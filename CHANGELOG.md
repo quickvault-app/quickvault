@@ -1019,6 +1019,9 @@ Dates are ISO 8601. Newest first within each section.
   you can see differs" is true; versions with the same content each get
   their own Keep button instead of a single "Keep it" (owner QA, plan 0062).
   The sync receipt and toasts are centered on the main pane on desktop.
+- 2026-11-15: Password fields show the app's own "Caps Lock" hint while Caps
+  Lock is on, on every platform, replacing WebKitGTK's black indicator
+  (owner QA, plan 0062).
 - 2026-11-15: The media player's volume slider shows 0 while muted and
   returns to the previous volume on unmute (owner report).
   Known limit on Linux: without a PulseAudio server (`pipewire-pulse`),

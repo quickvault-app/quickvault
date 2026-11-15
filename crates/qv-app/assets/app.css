@@ -124,6 +124,11 @@ kbd{font:11px system-ui,sans-serif;border:1px solid var(--line);border-bottom-wi
 .pw:focus-within{border-color:var(--accent);box-shadow:0 0 0 4px var(--soft)}
 .pw input{flex:1;min-width:0;border:0;background:none;font-size:15px;height:100%}
 .pw.bad{animation:shake .35s;border-color:var(--danger)}
+/* Caps Lock (app.js, plan 0062): the app's hint replaces WebKit's indicator. */
+input::-webkit-caps-lock-indicator{display:none;content:none}
+.pw[data-caps]::after{content:"Caps Lock";order:1;flex:none;padding:3px 8px;border-radius:8px;background:var(--warn-soft);color:var(--warn);font-size:11.5px;font-weight:600}
+.pw .go{order:2}
+.field[data-caps]::after{content:"Caps Lock is on";color:var(--warn);font-size:12px}
 .go{width:36px;height:36px;border:0;border-radius:10px;background:var(--accent);color:var(--ink);display:grid;place-items:center;flex:none}
 .go:disabled{background:var(--raised2);color:var(--text3);opacity:1}
 .ghost{border:0;background:none;color:var(--text2);border-radius:8px;padding:6px 10px;display:inline-flex;align-items:center;gap:7px}

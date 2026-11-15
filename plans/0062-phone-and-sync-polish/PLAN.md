@@ -113,3 +113,8 @@ hides while the keyboard is open). 0013 unchanged.
   version), `conflict_compare_shows_a_renamed_field`. The owner's later Keep and
   confirmation resolved it; why the first attempt did not was not
   established (the controller path passes the test above).
+- 2026-11-15: (9) The owner asked about a black icon in the focused master
+  password field: WebKitGTK's Caps Lock indicator (confirmed by the owner).
+  It is hidden; `app.js` tracks Caps Lock from key and pointer events and
+  marks the focused password field's wrapper, and CSS shows a "Caps Lock"
+  pill in the unlock field or a line under form fields (WEBKIT.md W12).

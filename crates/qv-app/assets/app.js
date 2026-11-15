@@ -207,5 +207,19 @@ const keyboard=()=>{
 };
 window.addEventListener("resize",keyboard,{passive:true});
 for(const name of ["focusin","focusout"])document.addEventListener(name,()=>setTimeout(keyboard,0),true);
+// Caps Lock in a focused password field shows the app's own hint on every
+// platform; WebKitGTK's black indicator is hidden in CSS (owner, plan 0062).
+// The state is known only from key and pointer events.
+let capsOn=false;
+const capsHint=()=>{
+    for(const el of document.querySelectorAll("[data-caps]"))el.removeAttribute("data-caps");
+    const el=document.activeElement;
+    if(capsOn&&el instanceof HTMLInputElement&&el.type==="password")el.closest(".pw,.field")?.setAttribute("data-caps","");
+};
+for(const name of ["keydown","keyup","pointerdown"])document.addEventListener(name,event=>{
+    if(typeof event.getModifierState==="function")capsOn=event.getModifierState("CapsLock");
+    capsHint();
+},true);
+for(const name of ["focusin","focusout"])document.addEventListener(name,()=>setTimeout(capsHint,0),true);
 // Clipboard commands must go from Rust to the OS with bounded ownership.
 for(const name of ["copy","cut"])document.addEventListener(name,event=>event.preventDefault());

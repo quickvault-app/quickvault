@@ -171,6 +171,18 @@ Whenever a new WebKitGTK bug, workaround or limit is found, add an entry here
 - **Docs:** `CHANGELOG.md` (2026-11-15).
 - **On change:** check mute against pause with no PulseAudio server.
 
+### W12. Caps Lock indicator in password fields
+
+- **Symptom:** WebKitGTK draws a black up-arrow inside a focused password
+  field while Caps Lock is on, out of place on the dark theme and absent
+  on the other engines.
+- **Response:** hidden with `::-webkit-caps-lock-indicator`; `app.js`
+  tracks Caps Lock from key and pointer events and the app shows its own
+  hint (a "Caps Lock" pill in the unlock field, "Caps Lock is on" under form
+  fields) on every platform with a hardware keyboard.
+- **Docs:** plan 0062, `CHANGELOG.md`.
+- **On change:** keep the app's hint; drop the WebKit rule if unused.
+
 ## Testing method
 
 Real-engine checks run on a private X server, with a private D-Bus and
