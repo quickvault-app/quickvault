@@ -11,3 +11,8 @@
 # Shared app packaging and isolated vendor-test outputs (plan 0030)
 /crates/qv-app/dist/
 /third-party/target/
+
+# Signing keys never enter the repository (docs/RELEASE.md)
+*.jks
+*.keystore
+*.b64

@@ -27,7 +27,8 @@ fi
 # it with the owner's keystore: QV_ANDROID_KEYSTORE (path) and
 # QV_ANDROID_KEY_ALIAS. apksigner prompts for the password unless
 # QV_ANDROID_KS_PASS names an apksigner password source (for example
-# `file:/path`). Never use a generated or repository key for a published APK.
+# `file:/path` or `env:VAR`). Published APKs use the one stable project key
+# kept in the CI secrets (docs/RELEASE.md); never a key in the repository.
 qv_release=${QV_APP_RELEASE:-0}
 if [ "$qv_release" = 1 ]; then
     if [ "${QV_APP_DEVICE_VALIDATION:-0}" = 1 ] || [ "${QV_APP_MEDIA_VALIDATION:-0}" = 1 ]; then

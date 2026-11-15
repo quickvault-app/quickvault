@@ -134,9 +134,12 @@ Record pinned dependencies, applicable audit reports, known limitations and test
 results with each release. Supply chain: commit `Cargo.lock`; build with
 `--locked`; run `cargo deny` (advisories, licenses, sources) and `cargo vet` (or
 equivalent recorded review) for every dependency change; keep security-critical
-crates (crypto, CBOR, SQLite bindings, TLS) to a reviewed minimum; sign release
-artifacts and publish checksums; work toward reproducible builds so third
-parties can verify them. A failed gate blocks the affected feature, not
+crates (crypto, CBOR, SQLite bindings, TLS) to a reviewed minimum; publish
+SHA-256 checksums with every release artifact; work toward reproducible builds
+so third parties can verify them. Release artifacts are not signed (owner,
+2026-11-15), except that Android requires an APK signature: the release APK is
+signed with one stable project key kept as a CI secret, so each release installs
+over the previous one; it attests continuity, not identity. A failed gate blocks the affected feature, not
 permission to silently weaken its protocol. Hosted admission, witness services
 and a second server DB require their own evidence before enabling them.
 
@@ -179,6 +182,7 @@ implementation evidence, not claims that this repository already has them.
 
 ## Changelog
 
+- 2026-11-15: §3: release artifacts carry SHA-256 checksums and are unsigned; the Android APK uses one stable project key kept as a CI secret (owner decision, plan 0056).
 - 2026-11-15: The "Snapshot disk growth" row covers room-based pruning and interrupted or unverified compaction (plan 0060).
 - 2026-11-15: The large-vault fixture boundary follows the 8 GiB ciphertext budget; the "Snapshot disk growth" row tests snapshots kept inside commits (plan 0059).
 - 2026-11-09: Require lan/2 engine/composition readiness and hostile-peer/large-vault evidence.

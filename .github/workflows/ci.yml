@@ -1,5 +1,6 @@
 # Standard gates (AGENTS.md) and supply-chain checks (spec 0012 §3).
-# Actions are pinned by commit SHA; tools by exact version.
+# Actions are pinned by commit SHA; tools by exact version. Tests and quality
+# only: no artifacts. Release artifacts come from release.yml on `v*` tags.
 name: ci
 
 on:
@@ -62,8 +63,8 @@ jobs:
       - name: Maintained webview integration regressions
         run: cargo test --manifest-path third-party/Cargo.toml --locked -p dioxus-desktop --no-default-features --features tokio_runtime --lib hardened
 
-  # Windows (plan 0052): the gates on the MSVC target, the desktop app, and
-  # the unsigned release zip as a workflow artifact. Real-Windows evidence for
+  # Windows (plan 0052): the gates on the MSVC target and the desktop app.
+  # Release executables come from release.yml (plan 0056). Real-Windows evidence for
   # ACLs, locks and renames; lock/sleep events, dialogs, the clipboard and the
   # webview boundary stay on the attended checklist (WINDOWS-GATES.md).
   windows:
@@ -85,16 +86,6 @@ jobs:
         run: cargo clippy --locked -p qv-app --features desktop --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked
-      - name: Package (unsigned)
-        shell: pwsh
-        run: ./crates/qv-app/scripts/package-windows.ps1
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: quickvault-windows-x86_64
-          path: |
-            target/dist/*.zip
-            target/dist/*.zip.sha256
-          if-no-files-found: error
 
   android-app-build:
     runs-on: ubuntu-latest

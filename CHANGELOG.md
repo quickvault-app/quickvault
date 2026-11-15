@@ -9,6 +9,12 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Changed
 
+- 2026-11-15: Releases (plan 0056): pushing a `v<version>` tag builds and
+  publishes the Android APK, the Windows executables, a Debian package, an
+  Alpine package and `SHA256SUMS` as a GitHub Release; pushes and pull
+  requests only run tests and checks, with no artifacts. Artifacts are
+  unsigned; the APK uses one stable project key kept as a CI secret, so each
+  release installs over the last (0012 §3 amended).
 - 2026-11-15: Groups on the phone, and the last group remembered (owner
   request, plan 0063). "All items" and every group show the vault's
   top-level groups as chips where the sidebar does not (phones, narrow

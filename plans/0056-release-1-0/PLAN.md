@@ -213,6 +213,36 @@ deliberate freeze. Current state, from `plans/README.md` on 2026-11-14:
 
 ## Revisions
 
+### 2026-11-15 — Owner decisions and the release pipeline
+
+The owner resolved the open decisions:
+- **D12:** the protocol review is done by another agent session, not an
+  outside reviewer. The release record says so plainly: it is a fresh,
+  separate review, not independent in the 0012 sense of a different party.
+- **Freeze go-ahead (Decision 2): given.** Step 7 is unblocked; it runs as
+  its own architect → developer → reviewer plan.
+- **Android signing (Decision 3):** no owner PKI. Android refuses unsigned
+  APKs and installs an update only over the same signer, so the release APK
+  is signed with **one stable project key** generated once and kept as a
+  GitHub Actions secret (`QV_ANDROID_KEYSTORE_B64`, `QV_ANDROID_KS_PASSWORD`,
+  alias `quickvault`). It attests continuity between releases, not identity.
+  The owner creates it with the commands in `docs/RELEASE.md`; agents never
+  hold it.
+- **Other artifacts (Decision 4):** unsigned, with SHA-256 checksums (0012 §3
+  amended).
+- **CI:** pushes and pull requests run tests and quality gates only, with no
+  artifacts (the `windows` job's zip upload is removed). A new `release`
+  workflow runs only on `v*` tags and publishes a GitHub Release with:
+  Android APK (arm64), Windows `quickvault.exe` and `qv.exe` (x86_64), a
+  Debian package (amd64, built on Debian 12 for its glibc and WebKitGTK), an
+  Alpine package (x86_64, built on Alpine 3.22, installed with
+  `--allow-untrusted`), and `SHA256SUMS`. The release starts as a draft and is
+  published only when every asset is uploaded; a tag that does not match the
+  workspace version fails at once.
+- The workflow uses only actions already pinned in `ci.yml` plus the runners'
+  `gh` and `docker`; no new third-party actions or crates.
+
+
 None.
 
 ## Execution log

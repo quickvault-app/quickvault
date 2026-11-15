@@ -23,29 +23,57 @@ gate has not passed is disabled or left out of the release.
 
 ## Artifacts
 
-All artifacts are built from the tagged commit with `--locked`.
+Pushing a tag `v<version>` (matching `Cargo.toml`) runs
+`.github/workflows/release.yml`, which builds everything from the tagged
+commit with `--locked` and publishes a GitHub Release. Pushes and pull
+requests (`ci.yml`) only test; they publish nothing.
 
-| Platform | Command | Output |
-|----------|---------|--------|
-| Linux x86_64 | `sh crates/qv-app/scripts/package-linux.sh` | `target/dist/quickvault-<v>-linux-x86_64.tar.gz` and `.sha256` |
-| Windows x86_64 | `crates/qv-app/scripts/package-windows.ps1` (on Windows, MSVC) | `target/dist/quickvault-<v>-windows-x86_64.zip` and `.sha256` |
-| Android arm64 | `QV_APP_RELEASE=1 QV_ANDROID_KEYSTORE=<owner keystore> QV_ANDROID_KEY_ALIAS=<alias> sh crates/qv-app/scripts/build-android.sh` (after the usual Android environment; apksigner prompts for the password) | `crates/qv-app/dist/quickvault-release.apk` (with its v4 `.idsig`) and `dist/apk-certs.txt` |
+| Asset | Built on | Install |
+|-------|----------|---------|
+| `quickvault-<v>-android-arm64.apk` | Ubuntu, `build-android.sh` with `QV_APP_RELEASE=1` | Open the file on the phone (allow installs from this source) |
+| `quickvault-<v>-windows-x86_64.exe`, `qv-<v>-windows-x86_64.exe` | Windows (MSVC) | Run; the app needs the WebView2 runtime that Windows 10 and 11 ship |
+| `quickvault_<v>_amd64.deb` | Debian 12 container, `package-deb.sh` | `sudo apt install ./quickvault_<v>_amd64.deb` (Debian 12+, Ubuntu 24.04+) |
+| `quickvault-<v>-r0-alpine-x86_64.apk` | Alpine 3.22 container, `package-alpine.sh` | `apk add --allow-untrusted ./quickvault-<v>-r0-alpine-x86_64.apk` |
+| `SHA256SUMS` | the last job | `sha256sum -c SHA256SUMS` |
+
+The release starts as a draft and is published only when every asset is
+uploaded. A tag that does not match the workspace version stops at once.
+`package-linux.sh` (tarball) and `package-windows.ps1` (zip) remain for
+local builds.
 
 Without `QV_APP_RELEASE=1`, `build-android.sh` builds the development APK
 (`android:debuggable="true"`, debug key); never publish it. The release
 build refuses validation features and refuses an APK that is still
-debuggable. Build the Linux tarball on a glibc distribution no newer than
-the oldest one you support: the binaries link the system GTK and
-WebKitGTK.
+debuggable.
 
 ## Signing and checksums
 
-- Each archive contains `SHA256SUMS` for its files, and each archive has its
-  own `.sha256`.
-- Sign the archives (and the Android APK, through its own signing scheme)
-  with the owner's release key, which never enters the repository or an
-  agent session. Publish the public key and the detached signatures with the
-  release.
+Artifacts are unsigned (owner decision, 0012 §3); `SHA256SUMS` lists every
+asset.
+
+- **Android** refuses unsigned APKs and installs an update only over an APK
+  from the same signer. The release APK is therefore signed with one stable
+  project key, kept as GitHub Actions secrets. It attests continuity between
+  releases, not identity. Create it once (keep a copy offline: losing it
+  means users must uninstall, and lose app data, to install the next
+  release):
+
+  ```sh
+  keytool -genkeypair -keystore quickvault-release.jks -alias quickvault \
+      -keyalg RSA -keysize 4096 -validity 36500 -dname "CN=QuickVault"
+  base64 -w0 quickvault-release.jks > quickvault-release.b64
+  ```
+
+  Then, on GitHub: the repository's **Settings → Secrets and variables →
+  Actions → New repository secret**, twice: `QV_ANDROID_KEYSTORE_B64` with the
+  contents of `quickvault-release.b64`, and `QV_ANDROID_KS_PASSWORD` with the
+  keystore password. Delete `quickvault-release.b64`; keep the `.jks` and the
+  password outside the repository. (The release workflow's own `gh` runs on
+  GitHub's machines; nothing needs installing locally.)
+
+- **Alpine** packages are always signed by `abuild`; each build signs with a
+  throwaway key it discards, so installs use `--allow-untrusted`.
+- **Debian** packages are not signed (only apt repositories are).
 
 ## Release notes
 

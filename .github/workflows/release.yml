@@ -1,0 +1,160 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Release artifacts (plan 0056), only for `v*` tags. Pushes and pull requests
+# run ci.yml, which publishes nothing. The release starts as a draft, every
+# build job uploads its files with the runner's `gh`, and the last job adds
+# SHA256SUMS and publishes it. Artifacts are unsigned (0012 §3); the Android
+# APK uses the one stable project key held in the repository secrets.
+# Actions are pinned by commit SHA (the ones ci.yml already uses).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag matches the workspace version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME is not v$version (Cargo.toml)" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "QuickVault $GITHUB_REF_NAME" \
+            --notes "Unsigned artifacts; check them against SHA256SUMS. See CHANGELOG.md and docs/RELEASE.md."
+
+  android:
+    needs: draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain and Android target
+        run: rustup toolchain install && rustup target add aarch64-linux-android
+      - name: JDK and CLI prerequisites
+        run: sudo apt-get update && sudo apt-get install -y openjdk-21-jdk pkg-config libssl-dev
+      - name: SDK, NDK and pinned packaging tool
+        run: |
+          export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+          sh scripts/setup-android.sh --accept-licenses
+          cargo install --locked dioxus-cli --version 0.7.10
+      - name: Release APK, signed with the project key
+        env:
+          KEYSTORE_B64: ${{ secrets.QV_ANDROID_KEYSTORE_B64 }}
+          QV_KS_PASSWORD: ${{ secrets.QV_ANDROID_KS_PASSWORD }}
+        run: |
+          [ -n "$KEYSTORE_B64" ] && [ -n "$QV_KS_PASSWORD" ] || {
+            echo 'Set the QV_ANDROID_KEYSTORE_B64 and QV_ANDROID_KS_PASSWORD secrets (docs/RELEASE.md).' >&2; exit 1; }
+          keystore="$RUNNER_TEMP/quickvault-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$keystore"
+          export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+          eval "$(sh scripts/setup-android.sh --print-env)"
+          QV_APP_RELEASE=1 QV_ANDROID_KEYSTORE="$keystore" QV_ANDROID_KEY_ALIAS=quickvault \
+            QV_ANDROID_KS_PASS=env:QV_KS_PASSWORD sh crates/qv-app/scripts/build-android.sh
+          rm -f "$keystore"
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.draft.outputs.version }}
+        run: |
+          cp crates/qv-app/dist/quickvault-release.apk "quickvault-$VERSION-android-arm64.apk"
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "quickvault-$VERSION-android-arm64.apk"
+
+  windows:
+    needs: draft
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Build
+        run: |
+          cargo build --release --locked -p qv-cli --bin qv
+          cargo build --release --locked -p qv-app --features desktop --bin quickvault
+      - name: Upload
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.draft.outputs.version }}
+        run: |
+          Copy-Item target\release\quickvault.exe "quickvault-$env:VERSION-windows-x86_64.exe"
+          Copy-Item target\release\qv.exe "qv-$env:VERSION-windows-x86_64.exe"
+          gh release upload $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY "quickvault-$env:VERSION-windows-x86_64.exe" "qv-$env:VERSION-windows-x86_64.exe"
+
+  debian:
+    needs: draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Debian 12's glibc and WebKitGTK: the package runs there and on newer
+      # Debian and Ubuntu releases.
+      - name: Build the .deb on Debian 12
+        run: docker run --rm -v "$PWD:/src" -w /src debian:12 sh crates/qv-app/scripts/package-deb.sh
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" target/dist/*.deb
+
+  alpine:
+    needs: draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the Alpine package on Alpine 3.22
+        run: docker run --rm -v "$PWD:/src" -w /src alpine:3.22 sh crates/qv-app/scripts/package-alpine.sh
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" target/dist/*.apk
+
+  publish:
+    needs: [draft, android, windows, debian, alpine]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checksums, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir assets && cd assets
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+          sha256sum -- * | LC_ALL=C sort -k 2 > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" SHA256SUMS
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
