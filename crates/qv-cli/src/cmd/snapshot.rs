@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! `qv snapshot ls [--json]` / `restore <id> <new-path>` (spec 0011 §4–5, 0007 §3).
+//! `qv snapshot ls [--json]` / `restore <id> <new-path>` / `rm <id>… | --all`
+//! (spec 0011 §4–5, 0007 §3).
 //!
 //! Listing authenticates each file's archive header with the vault key, so
 //! only this vault ID and key generation appear. Files that do not
@@ -24,8 +25,89 @@ pub(crate) fn run(ctx: &Ctx, m: &ArgMatches) -> Result<(), CliError> {
         "ls" => list(ctx),
         "restore" => restore(ctx, args),
         "export" => export(ctx, args),
+        "rm" => remove(ctx, args),
         _ => Err(CliError::usage("unknown snapshot command")),
     }
+}
+
+/// A snapshot ID argument: 6 to 32 hex digits, optionally after `@`.
+fn check_id(id: &str) -> Result<(), CliError> {
+    let prefix = id.strip_prefix('@').unwrap_or(id);
+    if !(6..=32).contains(&prefix.len()) || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(CliError::usage("a snapshot ID needs 6 to 32 hex digits"));
+    }
+    Ok(())
+}
+
+/// `snapshot rm <id>… | --all` (0011 §4, 0007 §3.3): every ID must name
+/// exactly one snapshot before anything is deleted.
+fn remove(ctx: &Ctx, args: &ArgMatches) -> Result<(), CliError> {
+    if ctx.json {
+        return Err(CliError::usage("snapshot rm does not support --json"));
+    }
+    let all = args.get_flag("all");
+    let given: Vec<&String> = args
+        .get_many::<String>("id")
+        .map(Iterator::collect)
+        .unwrap_or_default();
+    for id in &given {
+        check_id(id)?;
+    }
+    if !ctx.yes {
+        if ctx.password_stdin {
+            return Err(CliError::usage(
+                "snapshot rm with --password-stdin needs --yes",
+            ));
+        }
+        crate::term::stdio_tty()?;
+    }
+    let session = ctx.unlock()?;
+    let mut ids: Vec<String> = if all {
+        session
+            .snapshots()?
+            .snapshots
+            .into_iter()
+            .map(|s| s.archive_id)
+            .collect()
+    } else {
+        let mut ids = Vec::new();
+        for id in given {
+            match session.snapshot_matches(id)?.as_slice() {
+                [] => return Err(CliError::new(crate::exit::NOT_FOUND, "snapshot not found")),
+                [one] => ids.push(one.clone()),
+                many => {
+                    return Err(CliError::new(
+                        crate::exit::AMBIGUOUS,
+                        format!("ambiguous snapshot ID; matches: {}", many.join(", ")),
+                    ));
+                }
+            }
+        }
+        ids
+    };
+    ids.sort();
+    ids.dedup();
+    let mut out = Out::stdout();
+    if ids.is_empty() {
+        out.raw("No snapshots.\n");
+        out.flush()?;
+        session.lock();
+        return Ok(());
+    }
+    let question = format!(
+        "Delete {} snapshot(s)? Their data can no longer be restored; this is not secure erasure.",
+        ids.len()
+    );
+    if !ctx.yes && !crate::term::stdio_tty()?.confirm(&question)? {
+        return Err(CliError::cancelled());
+    }
+    crate::signals::check()?;
+    let deleted = session.delete_snapshots(&ids)?;
+    crate::cli::warn_snapshots(&session);
+    out.raw(&format!("Deleted {deleted} snapshot(s).\n"));
+    out.flush()?;
+    session.lock();
+    Ok(())
 }
 
 fn restore(ctx: &Ctx, args: &ArgMatches) -> Result<(), CliError> {
@@ -36,10 +118,7 @@ fn restore(ctx: &Ctx, args: &ArgMatches) -> Result<(), CliError> {
         .get_one::<String>("id")
         .map(String::as_str)
         .unwrap_or_default();
-    let prefix = id.strip_prefix('@').unwrap_or(id);
-    if !(6..=32).contains(&prefix.len()) || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(CliError::usage("a snapshot ID needs 6 to 32 hex digits"));
-    }
+    check_id(id)?;
     let target = args
         .get_one::<std::path::PathBuf>("path")
         .ok_or_else(|| CliError::usage("missing restore path"))?;

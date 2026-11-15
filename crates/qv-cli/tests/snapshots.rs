@@ -312,3 +312,110 @@ fn snapshot_restore_slot_bearing_header_is_integrity() {
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 }
+
+#[test]
+fn snapshot_rm_deletes_by_id_or_all_after_confirmation() {
+    let h = Home::new();
+    drop(h.create());
+    let ls = |h: &Home| -> Vec<String> {
+        let o = run(h, &["snapshot", "ls"]);
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        o.stdout.lines().map(|l| l[..32].to_owned()).collect()
+    };
+    // Preflight: an ID or --all, valid syntax, no JSON, --yes with stdin.
+    for (args, code) in [
+        (vec!["snapshot", "rm"], 2),
+        (vec!["snapshot", "rm", "xyz"], 2),
+        (vec!["snapshot", "rm", "--all", "abcdef"], 2),
+        (vec!["--yes", "--json", "snapshot", "rm", "--all"], 2),
+        (vec!["snapshot", "rm", "--all"], 2),
+    ] {
+        let o = run(&h, &args);
+        assert_eq!(o.code, code, "{args:?}: {}", o.stderr);
+    }
+    let o = run(&h, &["--yes", "snapshot", "rm", "--all"]);
+    assert_eq!(
+        (o.code, o.stdout.as_str()),
+        (0, "No snapshots.\n"),
+        "{}",
+        o.stderr
+    );
+
+    change(&h, "First");
+    assert_eq!(ls(&h).len(), 1);
+    let o = run(&h, &["--yes", "snapshot", "rm", "--all"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stdout, "Deleted 1 snapshot(s).\n");
+    assert!(ls(&h).is_empty());
+
+    // With none left, the next change keeps a new one; delete it by prefix.
+    change(&h, "Second");
+    let ids = ls(&h);
+    assert_eq!(ids.len(), 1);
+    // A prefix naming no snapshot deletes nothing.
+    let other = if ids[0].starts_with('0') {
+        "@1111111"
+    } else {
+        "@0000000"
+    };
+    let o = run(&h, &["--yes", "snapshot", "rm", other]);
+    assert_eq!(o.code, 4, "{}", o.stderr);
+    assert_eq!(ls(&h), ids);
+    let o = run(&h, &["--yes", "snapshot", "rm", &ids[0][..8]]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stdout, "Deleted 1 snapshot(s).\n");
+    assert!(ls(&h).is_empty());
+    let o = run(&h, &["--yes", "snapshot", "rm", &ids[0]]);
+    assert_eq!(o.code, 4, "{}", o.stderr);
+}
+
+// 0012 §1: Snapshot disk growth
+#[test]
+fn compact_reports_storage_and_shrinks_the_file() {
+    let h = Home::new();
+    let s = h.create();
+    let root = s.root().unwrap();
+    let e = s.new_entry(root, "login", "Files").unwrap();
+    let e = s.save_entry(e).unwrap();
+    // 8 MiB freed stays below the automatic threshold (32 MiB).
+    let data = vec![7_u8; 8 * 1024 * 1024];
+    let a = s
+        .add_attachment(
+            e,
+            "data.bin",
+            "application/octet-stream",
+            &mut data.as_slice(),
+            None,
+        )
+        .unwrap();
+    s.remove_attachment(a, false).unwrap();
+    s.lock();
+    let before = std::fs::metadata(h.vault()).unwrap().len();
+
+    let o = run(&h, &["compact"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let lines: Vec<&str> = o.stdout.lines().collect();
+    assert_eq!(lines.len(), 5, "{}", o.stdout);
+    assert_eq!(lines[0], format!("Vault file: {before} bytes"));
+    assert!(lines[1].starts_with("Reclaimable: ") && !lines[1].starts_with("Reclaimable: 0 "));
+    assert!(lines[2].starts_with("Snapshots: "));
+    assert!(lines[3].starts_with("Free disk space: "));
+    let after = std::fs::metadata(h.vault()).unwrap().len();
+    assert!(after + 4 * 1024 * 1024 < before);
+    assert_eq!(lines[4], format!("Compacted: {before} -> {after} bytes"));
+
+    let o = run(&h, &["--json", "compact"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let json = o.stdout.trim_end();
+    assert!(
+        json.starts_with(&format!("{{\"file_bytes\":{after},\"free_bytes\":0,")),
+        "{json}"
+    );
+    assert!(json.contains("\"snapshot_bytes\":") && json.contains("\"disk_free\":"));
+    assert!(
+        json.ends_with("\"compacted_from\":null,\"compacted_to\":null}"),
+        "{json}"
+    );
+    let o = run(&h, &["verify"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+}

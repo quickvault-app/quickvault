@@ -157,9 +157,10 @@ pub use session::{CancelToken, EntryHandle, FieldHandle, GroupHandle, ItemHandle
 pub use settings::{SettingsDraft, estimate, generate};
 pub use setup::{Core, CoreConfig, Created, Protection, SystemTime, TimeSource, VaultInfo, harden};
 pub use snapshot::{
-    DEFAULT_MAX_AGE_SECONDS, DEFAULT_MAX_BYTES, DEFAULT_MAX_COUNT, DeletionTarget,
-    RecoverySnapshot, SNAPSHOT_INTERVAL_SECONDS, SnapshotListing, SnapshotPolicy, SnapshotReport,
-    SnapshotSkip, SnapshotSummary, VerifyNote, VerifyReport,
+    AUTO_COMPACT_MIN_BYTES, DEFAULT_MAX_AGE_SECONDS, DEFAULT_MAX_BYTES, DEFAULT_MAX_COUNT,
+    DeletionTarget, RecoverySnapshot, SNAPSHOT_INTERVAL_SECONDS, SnapshotListing, SnapshotPolicy,
+    SnapshotReport, SnapshotSkip, SnapshotSpace, SnapshotSummary, StorageInfo, VerifyNote,
+    VerifyReport,
 };
 pub use strength::{PasswordCheck, PasswordVerdict, confirmation_positions, password_strength};
 pub use views::{

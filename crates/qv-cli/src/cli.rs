@@ -222,8 +222,15 @@ pub(crate) fn command() -> Command {
                 .subcommand(Command::new("restore")
                     .about("Restore into a new vault path and explicit recovery baseline; may be old")
                     .arg(Arg::new("id").required(true))
-                    .arg(Arg::new("path").required(true).value_parser(value_parser!(std::path::PathBuf)))),
+                    .arg(Arg::new("path").required(true).value_parser(value_parser!(std::path::PathBuf))))
+                .subcommand(Command::new("rm")
+                    .about("Delete local snapshots after confirmation; not secure erasure")
+                    .arg(Arg::new("id").num_args(1..).required_unless_present("all"))
+                    .arg(flag("all", "Delete every local snapshot of this vault").conflicts_with("id"))),
         )
+        .subcommand(Command::new("compact").about(
+            "Rewrite the vault file without its free space and show the storage overview; changes no data",
+        ))
         .subcommand(Command::new("verify").about(
             "Re-hash and authenticate the vault without repairing it; opening may complete a pending external anchor update",
         ))
@@ -555,6 +562,12 @@ pub(crate) fn warn_snapshots(session: &Session) {
             "qv: warning: the automatic snapshot needs {needed} bytes and was skipped: it does \
              not fit the snapshot budget\n"
         )),
+        Some(qv_core::SnapshotSkip::NoRoom { needed, available }) => {
+            crate::out::eprint(&format!(
+                "qv: warning: the change was saved without a snapshot: it needed {needed} bytes \
+                 and snapshots had room for {available} bytes here\n"
+            ));
+        }
         Some(qv_core::SnapshotSkip::Disabled) => crate::out::eprint(
             "qv: warning: local snapshots are disabled: no usable private snapshot directory\n",
         ),
@@ -642,6 +655,7 @@ fn dispatch(ctx: &Ctx, m: &ArgMatches) -> Result<(), CliError> {
         Some(("lan", s)) => crate::cmd::lan::run(ctx, s),
         Some(("snapshot", s)) => crate::cmd::snapshot::run(ctx, s),
         Some(("verify", s)) => crate::cmd::verify::run(ctx, s),
+        Some(("compact", s)) => crate::cmd::compact::run(ctx, s),
         _ => Err(CliError::new(OTHER, "unknown command")),
     }
 }

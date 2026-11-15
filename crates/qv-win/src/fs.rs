@@ -34,10 +34,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, FileDispositionInfo,
-    FileDispositionInfoEx, FileIdInfo, GetDriveTypeW, GetFileInformationByHandle,
-    GetFileInformationByHandleEx, GetFileType, GetVolumePathNameW, LOCKFILE_EXCLUSIVE_LOCK,
-    LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    MoveFileExW, READ_CONTROL, SetFileInformationByHandle, UnlockFileEx, WRITE_DAC,
+    FileDispositionInfoEx, FileIdInfo, GetDiskFreeSpaceExW, GetDriveTypeW,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, GetFileType, GetVolumePathNameW,
+    LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, MOVEFILE_REPLACE_EXISTING,
+    MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SetFileInformationByHandle, UnlockFileEx,
+    WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -247,7 +248,8 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     move_file(from, to, MOVEFILE_WRITE_THROUGH)
 }
 
-/// Atomically replaces `to` (anchor metadata only), write-through.
+/// Atomically replaces `to` (anchor metadata, and a verified compacted vault
+/// copy, 0004 §1.4), write-through.
 pub fn rename_replace(from: &Path, to: &Path) -> io::Result<()> {
     move_file(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
 }
@@ -587,6 +589,19 @@ pub fn drive_type(path: &Path) -> Drive {
     }
 }
 
+/// The space on the volume holding the directory `dir`: (bytes this user
+/// may still use, total bytes). For the snapshot room and compaction (0007
+/// §3.3, 0004 §1.4).
+pub fn disk_space(dir: &Path) -> io::Result<(u64, u64)> {
+    let name = wide(dir.as_os_str())?;
+    let (mut free, mut total, mut all_free) = (0u64, 0u64, 0u64);
+    // SAFETY: NUL-terminated input; the three outputs are valid, writable u64s.
+    if unsafe { GetDiskFreeSpaceExW(name.as_ptr(), &mut free, &mut total, &mut all_free) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((free, total))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -735,5 +750,11 @@ mod tests {
     #[test]
     fn temp_dir_is_local() {
         assert_ne!(drive_type(&std::env::temp_dir()), Drive::Remote);
+    }
+
+    #[test]
+    fn disk_space_of_temp_dir() {
+        let (free, total) = disk_space(&std::env::temp_dir()).unwrap();
+        assert!(total > 0 && free <= total);
     }
 }

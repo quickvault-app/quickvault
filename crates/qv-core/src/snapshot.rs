@@ -49,9 +49,15 @@ use crate::session::{CancelToken, Open, Session};
 /// Ordinary snapshots kept per vault (0007 §3.3, development value).
 pub const DEFAULT_MAX_COUNT: u32 = 48;
 
-/// Byte budget for snapshot-only data: kept manifests other than the live
-/// one, and objects only snapshots reference (0007 §3.3, plan 0059: 1 GiB).
+/// Byte budget of the snapshot files outside the vault: those from before
+/// plan 0059 and the VK rotation's recovery copy (0007 §3.1). Snapshots
+/// inside the vault have no byte budget; they use the room the vault does
+/// not need (0007 §3.3, plan 0060).
 pub const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Automatic compaction runs once at least this much of the file is free
+/// pages, and at least a quarter of it (0004 §1.4, plan 0060).
+pub const AUTO_COMPACT_MIN_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Maximum age of an ordinary snapshot (0007 §3.3, development value: 30
 /// days).
@@ -69,7 +75,8 @@ pub struct SnapshotPolicy {
     pub dir: SnapshotDir,
     /// Most ordinary snapshots kept.
     pub max_count: u32,
-    /// Aggregate budget of the ordinary snapshots' files on disk.
+    /// Aggregate budget of the snapshot files outside the vault (see
+    /// [`DEFAULT_MAX_BYTES`]).
     pub max_bytes: u64,
     /// Oldest age an ordinary snapshot may reach.
     pub max_age_seconds: i64,
@@ -97,7 +104,6 @@ impl SnapshotPolicy {
     pub(crate) fn budgets(&self) -> qv_store::SnapshotBudgets {
         qv_store::SnapshotBudgets {
             max_count: self.max_count,
-            max_bytes: self.max_bytes,
             max_age_ms: self.max_age_seconds.saturating_mul(MILLIS_PER_SECOND),
         }
     }
@@ -107,7 +113,6 @@ impl SnapshotPolicy {
 fn default_budgets() -> qv_store::SnapshotBudgets {
     qv_store::SnapshotBudgets {
         max_count: DEFAULT_MAX_COUNT,
-        max_bytes: DEFAULT_MAX_BYTES,
         max_age_ms: DEFAULT_MAX_AGE_SECONDS.saturating_mul(MILLIS_PER_SECOND),
     }
 }
@@ -154,6 +159,13 @@ pub(crate) fn arm_recovery(open: &mut Open, now: Timestamp) {
 pub(crate) fn after_mutation(open: &mut Open) {
     open.vault.arm_snapshot(None);
     if let Some(outcome) = open.vault.take_snapshot_outcome() {
+        record_outcome(open, &outcome);
+    }
+}
+
+/// Reports what a commit did with snapshots.
+fn record_outcome(open: &mut Open, outcome: &qv_store::SnapshotOutcome) {
+    {
         open.auto_snapshot = Some(SnapshotReport {
             published: outcome.kept.map(|row| SnapshotSummary {
                 archive_id: row.id_hex(),
@@ -168,14 +180,57 @@ pub(crate) fn after_mutation(open: &mut Open) {
                 .iter()
                 .map(qv_store::SnapshotRow::id_hex)
                 .collect(),
-            skipped: outcome
-                .skipped_for_space
-                .then_some(SnapshotSkip::OverBudget {
-                    needed: outcome.needed,
-                }),
+            skipped: outcome.skipped_for_space.then_some(SnapshotSkip::NoRoom {
+                needed: outcome.needed,
+                available: outcome.available,
+            }),
             failed: false,
         });
+        if outcome.skipped_for_space {
+            open.skipped_snapshot = Some(SnapshotSpace {
+                needed: outcome.needed,
+                available: outcome.available,
+            });
+        }
     }
+}
+
+/// After a successful mutation: compact the file when its free pages reach
+/// [`AUTO_COMPACT_MIN_BYTES`] and a quarter of it (0004 §1.4). Best effort:
+/// any failure (too little disk space, a pending anchor) leaves the vault as
+/// it is, and a later commit tries again.
+pub(crate) fn auto_compact(open: &mut Open) {
+    if open.read_only {
+        return;
+    }
+    if let Ok((file, free)) = open.vault.file_pages()
+        && free >= AUTO_COMPACT_MIN_BYTES
+        && free.saturating_mul(4) >= file
+    {
+        let _ = open.vault.compact(&|| false);
+    }
+}
+
+/// Why a commit kept no snapshot (0007 §3.3), for the frontend's notice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotSpace {
+    /// The snapshot-only bytes the snapshot needed.
+    pub needed: u64,
+    /// What snapshots could use at that commit.
+    pub available: u64,
+}
+
+/// The vault file's space (0009 §1.8 Storage; 0011 `compact`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageInfo {
+    /// The vault file's size.
+    pub file_bytes: u64,
+    /// Free pages inside it, which compaction returns to the volume.
+    pub free_bytes: u64,
+    /// What snapshots keep beside the live vault.
+    pub snapshot_bytes: u64,
+    /// Free space on the volume; `None` when it cannot be measured.
+    pub disk_free: Option<u64>,
 }
 
 impl core::fmt::Debug for SnapshotPolicy {
@@ -240,6 +295,14 @@ pub enum SnapshotSkip {
     OverBudget {
         /// The size the copy needs on disk.
         needed: u64,
+    },
+    /// A snapshot inside the vault did not fit the room the vault leaves
+    /// (0007 §3.3): the change was saved without it.
+    NoRoom {
+        /// The snapshot-only bytes it needed.
+        needed: u64,
+        /// What snapshots could use at that commit.
+        available: u64,
     },
 }
 
@@ -1155,6 +1218,47 @@ impl Session {
         })
     }
 
+    /// The notice that the last change was saved without a snapshot for lack
+    /// of room (0007 §3.3), once; `None` otherwise.
+    pub fn take_snapshot_skipped(&self) -> Option<SnapshotSpace> {
+        self.read(|ctx| Ok(ctx.open.skipped_snapshot.take()))
+            .ok()
+            .flatten()
+    }
+
+    /// The vault file's size, its reclaimable space, what snapshots use and
+    /// the volume's free space (0009 §1.8 Storage).
+    pub fn storage(&self) -> Result<StorageInfo, CoreError> {
+        self.read(|ctx| {
+            let s = ctx.open.vault.file_space()?;
+            Ok(StorageInfo {
+                file_bytes: s.file_bytes,
+                free_bytes: s.free_bytes,
+                snapshot_bytes: s.snapshot_bytes,
+                disk_free: s.disk_free,
+            })
+        })
+    }
+
+    /// Rewrites the vault file without its free pages (0004 §1.4) and
+    /// returns its size before and after; `None` when nothing was free.
+    /// [`StoreError::StorageCapacity`] when the volume lacks room for the
+    /// copy. A recovery session (writes blocked) cannot compact.
+    pub fn compact(&self, cancel: Option<&CancelToken>) -> Result<Option<(u64, u64)>, CoreError> {
+        self.read(|ctx| {
+            if ctx.open.read_only {
+                return Err(StoreError::NoAnchor.into());
+            }
+            ctx.check_cancel()?;
+            let c = ctx.canceller();
+            let done = ctx
+                .open
+                .vault
+                .compact(&|| c.is_cancelled() || cancel.is_some_and(CancelToken::is_cancelled))?;
+            Ok(done.map(|d| (d.before, d.after)))
+        })
+    }
+
     /// The automatic policy's outcome for this session, for the frontend's
     /// stderr warnings (0011 §4). `None` before an unlock and on a locked or
     /// never-unlocked session.
@@ -1336,19 +1440,33 @@ mod tests {
         assert_eq!(s.snapshots().unwrap().snapshots.len(), 1);
         drop(s);
 
-        // Bytes: with no room even for one, the commit goes ahead and the
-        // snapshot is skipped.
-        let s = env.unlock_with(Some(policy(&env, 48, 0, DEFAULT_MAX_AGE_SECONDS)));
-        at(&env, 21_001, 9, 0);
-        let before = seq(&s);
-        add_entry(&s, s.root().unwrap(), "no room");
-        assert!(seq(&s) > before);
-        let report = s.snapshot_status().unwrap();
-        assert!(matches!(
-            report.skipped,
-            Some(SnapshotSkip::OverBudget { .. })
-        ));
-        assert!(s.snapshots().unwrap().snapshots.is_empty());
+        // Room: a snapshot the store skipped for lack of room is reported,
+        // and its notice is handed out once (store tests force the room).
+        let s = env.unlock_with(Some(env.snapshot_policy()));
+        s.read(|ctx| {
+            let outcome = qv_store::SnapshotOutcome {
+                skipped_for_space: true,
+                needed: 5,
+                available: 2,
+                ..qv_store::SnapshotOutcome::default()
+            };
+            super::record_outcome(ctx.open, &outcome);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            s.snapshot_status().unwrap().skipped,
+            Some(SnapshotSkip::NoRoom {
+                needed: 5,
+                available: 2
+            })
+        );
+        let space = super::SnapshotSpace {
+            needed: 5,
+            available: 2,
+        };
+        assert_eq!(s.take_snapshot_skipped(), Some(space));
+        assert_eq!(s.take_snapshot_skipped(), None);
     }
 
     // 0012 §1: Rotation/purge ambiguity

@@ -936,10 +936,13 @@ fn cmp_cell(
 #[component]
 fn Snapshots(controller: Controller, epoch: FormEpoch, revision: u64) -> Element {
     let _ = revision;
-    let (rows, unreadable) = match controller.read(epoch, views::snapshots) {
+    let ((rows, unreadable), kept) = match controller.read(epoch, |s| {
+        Ok((views::snapshots(s)?, s.storage()?.snapshot_bytes))
+    }) {
         Some(Ok(v)) => v,
         other => return rsx! { Unreadable { error: other.and_then(Result::err) } },
     };
+    let count = rows.len();
     let typed = cfg!(target_os = "android") || crate::documents::picker_missing();
     let restore = |id: String| -> Box<dyn FnMut(MouseEvent)> {
         #[cfg(any(target_os = "linux", windows))]
@@ -955,11 +958,20 @@ fn Snapshots(controller: Controller, epoch: FormEpoch, revision: u64) -> Element
         Box::new(act(&controller, epoch, WsAction::RestoreSnapshot(id)))
     };
     rsx! {
-        Head { controller: controller.clone(), epoch, title: "Snapshots", lead: "Past states of this vault, kept inside the vault file: at most one an hour while you make changes, and before merges. Each keeps only what has changed since. Restoring creates a new vault file and a new recovery baseline; this vault is not changed.", nested: true }
+        Head { controller: controller.clone(), epoch, title: "Snapshots", lead: "Past states of this vault, kept inside the vault file: at most one an hour while you make changes, and before merges. Each keeps only what has changed since, using room the vault does not need; the oldest go first when space runs low. Restoring creates a new vault file and a new recovery baseline; this vault is not changed.", nested: true }
         div { class: "banner", Svg { icon: Icon::Archive } span { "Snapshots live in the vault file, so they do not protect against losing it. Export an archive for a backup." } }
         if unreadable > 0 { div { class: "banner", Svg { icon: Icon::Warn } span { "{unreadable} snapshot file(s) could not be authenticated and were skipped." } } }
         if typed {
             Input { controller: controller.clone(), epoch, field: WsField::Path, label: if cfg!(target_os = "android") { "Name for the restored vault".to_owned() } else { "New vault file for the restore (full path)".to_owned() }, kind: Kind::Line, value: None, disabled: false }
+        }
+        if count > 0 {
+            div { class: "card",
+                div { class: "set-row", id: "snapshots-summary",
+                    span { class: "si", Svg { icon: Icon::Archive } }
+                    span { class: "l", b { if count == 1 { "1 snapshot" } else { "{count} snapshots" } } span { "They keep {super::items::human_size(kept)} that the vault itself no longer holds" } }
+                    button { class: "btn danger-text", id: "delete-all-snapshots", onclick: act(&controller, epoch, WsAction::DeleteAllSnapshots), Svg { icon: Icon::Trash } "Delete all…" }
+                }
+            }
         }
         div { class: "card",
             if rows.is_empty() { div { class: "set-row", span { class: "l", span { "No snapshots yet." } } } }
@@ -968,6 +980,7 @@ fn Snapshots(controller: Controller, epoch: FormEpoch, revision: u64) -> Element
                     span { class: "si", Svg { icon: Icon::Clock } }
                     span { class: "l", b { "{r.created}" } span { "{r.kind} · keeps {super::items::human_size(r.size)} · {r.id}" } }
                     button { class: "btn", onclick: restore(r.id.clone()), Svg { icon: Icon::Restore } "Restore…" }
+                    button { class: "icon-btn", "aria-label": "Delete snapshot", title: "Delete", onclick: act(&controller, epoch, WsAction::DeleteSnapshot(r.id.clone())), Svg { icon: Icon::Trash } }
                 }
             }
         }
@@ -1131,6 +1144,7 @@ fn Settings(controller: Controller, epoch: FormEpoch, revision: u64, pane: Pane)
                     }
                     {row(Icon::Edit, "Name and retention", "Vault name, description, history and trash", Screen::Settings(Pane::General), "settings-general")}
                     {row(Icon::Clock, "Snapshots", "Restore an earlier copy into a new vault", Screen::Snapshots, "settings-snapshots")}
+                    {row(Icon::File, "Storage", "File size, free space and compaction", Screen::Settings(Pane::Storage), "settings-storage")}
                     {row(Icon::Archive, "Archives", "Export or merge changes as an encrypted file", Screen::Archives, "settings-archives")}
                     {row(Icon::Check, "Check vault integrity", "Re-checks every stored object; changes nothing", Screen::Settings(Pane::Verify), "settings-verify")}
                     {row(Icon::Shield, "About this vault", "Identifiers and key-derivation settings", Screen::Settings(Pane::About), "settings-about")}
@@ -1170,6 +1184,10 @@ fn Settings(controller: Controller, epoch: FormEpoch, revision: u64, pane: Pane)
         Pane::Verify => rsx! {
             Head { controller: controller.clone(), epoch, title: "Check vault integrity", lead: "Re-hashes and authenticates every object, manifest and the local head. Nothing is changed or repaired.", nested }
             div { class: "actions start", button { class: "btn primary", id: "verify", onclick: act(&controller, epoch, WsAction::Verify), Svg { icon: Icon::Check } "Check now" } }
+        },
+        Pane::Storage => rsx! {
+            Head { controller: controller.clone(), epoch, title: "Storage", lead: "Deleting data leaves free space inside the vault file. Compacting rewrites the file without it, so this device gets the space back. QuickVault also compacts by itself after large deletions. Snapshots use whatever room the vault does not need and give way when it is needed.", nested }
+            Storage { controller: controller.clone(), epoch, revision }
         },
         Pane::About => rsx! {
             Head { controller: controller.clone(), epoch, title: "About this vault", lead: "", nested }
@@ -1302,6 +1320,30 @@ fn PhrasePane(controller: Controller, epoch: FormEpoch, revision: u64) -> Elemen
             }
         }
         div { class: "actions start", button { class: "btn subtle", "data-qv-clear": "true", onclick: act(&controller, epoch, WsAction::HidePhrase), Svg { icon: Icon::EyeOff } "Hide the phrase" } }
+    }
+}
+#[component]
+fn Storage(controller: Controller, epoch: FormEpoch, revision: u64) -> Element {
+    let _ = revision;
+    let info = match controller.read(epoch, |s| s.storage()) {
+        Some(Ok(i)) => i,
+        other => return rsx! { Unreadable { error: other.and_then(Result::err) } },
+    };
+    let size = super::items::human_size;
+    let free = if info.free_bytes == 0 {
+        "None".to_owned()
+    } else {
+        format!("{} can be returned to this device", size(info.free_bytes))
+    };
+    let disk = info.disk_free.map_or_else(|| "Unknown".to_owned(), size);
+    rsx! {
+        div { class: "card",
+            div { class: "set-row", id: "storage-file", span { class: "si", Svg { icon: Icon::File } } span { class: "l", b { "Vault file" } span { "{size(info.file_bytes)}" } } }
+            div { class: "set-row", id: "storage-free", span { class: "si", Svg { icon: Icon::Refresh } } span { class: "l", b { "Free space inside the file" } span { "{free}" } } }
+            div { class: "set-row", id: "storage-snapshots", span { class: "si", Svg { icon: Icon::Clock } } span { class: "l", b { "Snapshots" } span { "{size(info.snapshot_bytes)} kept only by snapshots" } } }
+            div { class: "set-row", id: "storage-disk", span { class: "si", Svg { icon: Icon::Folder } } span { class: "l", b { "Free space on this device" } span { "{disk}" } } }
+        }
+        div { class: "actions start", button { class: "btn primary", id: "compact", disabled: info.free_bytes == 0, onclick: act(&controller, epoch, WsAction::Compact), Svg { icon: Icon::Refresh } "Compact now" } }
     }
 }
 #[component]

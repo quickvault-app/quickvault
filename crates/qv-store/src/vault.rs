@@ -420,6 +420,8 @@ impl VaultFile {
     /// validation and header/slot decoding. No KDF runs here.
     pub fn open(path: &Path) -> Result<VaultFile, StoreError> {
         crate::rotation_guard::check(path)?;
+        // A compaction copy a crash left behind (0004 §1.4); best effort.
+        let _ = fs::remove_stale_temps(path);
         let lock = fs::open_existing(path)?;
         Self::open_locked(path, lock)
     }
@@ -520,6 +522,25 @@ impl VaultFile {
             fs::rename_noreplace(&self.path, to)?;
             self.path = to.to_owned();
         }
+        fs::sync_dir(fs::parent_of(to))?;
+        self.lock.same_as_path(&self.path)
+    }
+
+    /// Moves this file, a verified compaction copy, over `to` and follows it
+    /// (0004 §1.4): SQLite's handle is closed around the move, which Windows
+    /// requires, and the connection reopened at whichever name the file has.
+    #[cfg(windows)]
+    pub(crate) fn replace_onto(&mut self, to: &Path) -> Result<(), StoreError> {
+        self.lock.same_as_path(&self.path)?;
+        let placeholder = Connection::open_in_memory().map_err(|e| crate::error::sqlite_err(&e))?;
+        let old = std::mem::replace(&mut self.conn, placeholder);
+        old.close().map_err(|(_, e)| crate::error::sqlite_err(&e))?;
+        let moved = fs::replace_vault(&self.path, to);
+        if moved.is_ok() {
+            self.path = to.to_owned();
+        }
+        self.reopen()?;
+        moved?;
         fs::sync_dir(fs::parent_of(to))?;
         self.lock.same_as_path(&self.path)
     }

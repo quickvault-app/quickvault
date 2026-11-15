@@ -359,6 +359,38 @@ mod tests {
         assert_eq!(bytes, 65_536);
     }
 
+    // 0012 §1: Snapshot disk growth
+    #[test]
+    fn attachment_removal_compacts_the_file_automatically() {
+        const MIB: u64 = 1024 * 1024;
+        let env = Env::new();
+        let s = env.unlock();
+        let e = entry(&s);
+        let data = vec![0x5a_u8; 40 * 1024 * 1024];
+        let h = s
+            .add_attachment(e, "big", "x", &mut data.as_slice(), None)
+            .unwrap();
+        let full = s.storage().unwrap();
+        assert!(full.file_bytes > 40 * MIB && full.free_bytes < 32 * MIB);
+        // Removing it frees most of the file: the change compacts it.
+        s.remove_attachment(h, false).unwrap();
+        let after = s.storage().unwrap();
+        assert_eq!(after.free_bytes, 0);
+        assert!(after.file_bytes < 8 * MIB, "{after:?}");
+        assert_eq!(
+            std::fs::metadata(&env.path).unwrap().len(),
+            after.file_bytes
+        );
+        assert!(after.disk_free.is_some());
+        // Nothing is left to free; the session still writes.
+        assert_eq!(s.compact(None).unwrap(), None);
+        s.add_attachment(e, "small", "x", &mut &b"abc"[..], None)
+            .unwrap();
+        drop(s);
+        let s = env.unlock();
+        assert!(s.verify(None).unwrap().ok());
+    }
+
     #[test]
     fn attachment_anchor_failure_keeps_index_and_read_only_refuses_staging() {
         let env = Env::new();

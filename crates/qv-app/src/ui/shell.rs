@@ -794,6 +794,8 @@ pub(crate) fn Confirm(
         ConfirmKind::Resolve(true) => "This choice permanently deletes the record's payload and history. Independent copies may remain. Create this resolution?".to_owned(),
         ConfirmKind::RestoreConflicts => "Restore this version and resolve the entry's current conflict with it?".to_owned(),
         ConfirmKind::OverBudget(n) => format!("The mandatory recovery snapshot needs {n} bytes and exceeds the snapshot budget. Allow it to exceed the budget? Nothing changes otherwise."),
+        ConfirmKind::DeleteSnapshots(1, None) => "Delete this snapshot? You can no longer restore the vault as it was then. Deletion is not secure erasure.".to_owned(),
+        ConfirmKind::DeleteSnapshots(n, bytes) => format!("Delete all {n} snapshots?{} You can no longer restore earlier states of the vault. Deletion is not secure erasure.", bytes.map_or_else(String::new, |b| format!(" They use {} of the vault file.", super::items::human_size(b)))),
         ConfirmKind::OldSnapshots(n) => format!("{n} local snapshots were taken before this password change and still open with the old password. Delete them? Copies elsewhere remain; deletion is not cryptographic erasure."),
         ConfirmKind::LinkApp => "Link this app to the entry? QuickVault verified the app's package and signing certificate, but cannot tell whether the app belongs to the service. Link only an app you trust.".to_owned(),
         ConfirmKind::ReducedQuick => "Lower protection: your screen lock PIN, pattern or password would open this vault, so anyone who knows it could too. Use it instead of your fingerprint? Fingerprint unlock never falls back to it by itself.".to_owned(),

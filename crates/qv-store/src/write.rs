@@ -791,6 +791,13 @@ impl Write<'_> {
             snapshot_index_digest: old.head.snapshot_index_digest,
         };
         let old_hash = old.head.manifest_hash;
+        // The room is measured only where snapshots may need pruning.
+        let room = match &old.snapshots {
+            Some(index) if !index.rows().is_empty() || self.snapshots.keep.is_some() => {
+                crate::space::commit_room(self.vault.file.path())
+            }
+            _ => crate::MAX_DB_BYTES,
+        };
         let planned = crate::snapshot_commit::plan(
             &crate::snapshot_commit::Inputs {
                 conn: &self.vault.file.conn,
@@ -799,6 +806,8 @@ impl Write<'_> {
                 old: old.snapshots.as_ref(),
                 replaced: (&old.manifest, old_hash),
                 live: (&self.manifest, sealed.hash),
+                live_len: len64(sealed.ciphertext.len()),
+                room,
             },
             &self.snapshots,
             cancelled,

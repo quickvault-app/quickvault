@@ -41,6 +41,7 @@ virtual-table features; enable SQLite defensive mode
 functions. Required hardening failures abort opening. Run bounded `quick_check`
 and validate the exact released schema before reading vault tables. Unexpected
 triggers, views, expression indexes or schema versions are errors.
+Attaching stays disabled except for the one compaction statement of §1.4.
 See [SQLite security guidance](https://www.sqlite.org/security.html).
 QuickVault never ingests a SQLite file it did not create as part of an
 automatic workflow: snapshots, automatic imports and file exchange use archives
@@ -63,6 +64,37 @@ transactions. Re-read the local head inside `BEGIN IMMEDIATE`; an unexpected
 head requires reload/merge before editing. Track file identity and reject
 external replacement. Modification time and header hashes are not concurrency
 or integrity checks. Local locks do not make external live copying safe.
+
+1.4. **Compaction (owner, 2026-11-15; plan 0060).** Deleting data leaves free
+pages that SQLite reuses but never returns to the volume. Compaction rewrites
+the file without them, holding the vault's process lock and with no
+transaction open and no anchor update pending:
+
+1. Remove stale temporary siblings of the vault (§1.1 temp names). Refuse with
+   a storage-capacity error unless the volume has the copy's size (pages in
+   use) plus 256 MiB free.
+2. Create the private, locked, empty temporary sibling as for a new vault and
+   write the copy with `VACUUM INTO` on the vault's own hardened connection.
+   Only for that one statement, with the bound temporary path, the attached
+   database limit is 1 instead of 0; it is restored and read back afterwards,
+   and a failed restore blocks further writes in the session.
+3. Flush the copy, open it with the full §1.2 identification and hardening,
+   and require byte equality of the header, header MAC, keyslots, local head,
+   replica row, snapshot index and live manifest row, plus equal row counts and
+   total stored lengths of the object and manifest tables. Any difference
+   removes the copy and leaves the vault unchanged.
+4. Move the copy over the vault path (replacing it), flush the directory and
+   reopen the session's connection at the path under the copy's lock, checking
+   the header, MAC and slots again.
+
+Both files are complete states with the same head, so a crash at any point
+leaves a valid vault, the external anchor is unchanged and no journal is
+needed; a leftover temporary copy is removed by the next open or compaction.
+Frontends compact automatically after a commit leaves at least 32 MiB and a
+quarter of the file free, skipping it when the copy would not fit (best
+effort, retried after a later commit), and on explicit request. The replaced
+file's blocks are released by the file system; like any deletion, this is not
+secure erasure.
 
 ### 2. Logical schema
 
@@ -532,6 +564,10 @@ is unsupported ([SQLite warning](https://www.sqlite.org/howtocorrupt.html)).
    format. Changes require documented policy/version updates.
 
 ## Changelog
+
+- 2026-11-15: §1.4 compaction (`VACUUM INTO` a private temporary sibling,
+  verified, moved over the vault; automatic after large frees and on request);
+  §1.2 notes its one-statement attach exception (owner request, plan 0060).
 
 - 2026-11-15: Larger budgets and snapshots inside the vault (owner request,
   plan 0059; numbers delegated): 2 GiB per attachment, 8 GiB total, chunks

@@ -547,6 +547,67 @@ fn trash_empty_needs_confirmation_names_snapshots_and_keeps_them_on_request() {
     assert_eq!(env.report(), Some(Report::Purged { purged: 1, kept: 0 }));
 }
 
+// 0012 §1: Snapshot disk growth
+#[test]
+fn snapshots_delete_one_or_all_after_confirmation_and_storage_compacts() {
+    let _k = KDF.lock().unwrap_or_else(|p| p.into_inner());
+    let env = Env::unlocked();
+    env.add_entry("One", SECRET);
+    let rows = env.read(views::snapshots).0;
+    assert_eq!(rows.len(), 1);
+    env.c.navigate(env.epoch(), Screen::Snapshots);
+    // Deleting one asks first; declining keeps it.
+    env.act(WsAction::DeleteSnapshot(rows[0].id.clone()));
+    assert_eq!(
+        env.c.pending(env.epoch()),
+        Some(ConfirmKind::DeleteSnapshots(1, None))
+    );
+    env.act(WsAction::Answer(false));
+    assert_eq!(env.read(views::snapshots).0.len(), 1);
+    env.act(WsAction::DeleteSnapshot(rows[0].id.clone()));
+    env.act(WsAction::Answer(true));
+    assert_eq!(env.notice(), Some("Snapshot deleted."), "{:?}", env.error());
+    assert!(env.read(views::snapshots).0.is_empty());
+    // The next change keeps a new one; "Delete all" names the count and
+    // the space they use.
+    env.add_entry("Two", SECRET);
+    assert_eq!(env.read(views::snapshots).0.len(), 1);
+    env.c.navigate(env.epoch(), Screen::Snapshots);
+    env.act(WsAction::DeleteAllSnapshots);
+    match env.c.pending(env.epoch()) {
+        Some(ConfirmKind::DeleteSnapshots(1, Some(bytes))) => assert!(bytes > 0),
+        other => panic!("{other:?}"),
+    }
+    env.act(WsAction::Answer(true));
+    assert_eq!(
+        env.notice(),
+        Some("All snapshots deleted."),
+        "{:?}",
+        env.error()
+    );
+    assert!(env.read(views::snapshots).0.is_empty());
+    // With none left there is nothing to confirm.
+    env.act(WsAction::DeleteAllSnapshots);
+    assert_eq!(env.c.pending(env.epoch()), None);
+    // Storage: compaction returns the free pages to the device.
+    env.c.navigate(env.epoch(), Screen::Settings(Pane::Storage));
+    let before = env.read(|s| s.storage());
+    env.act(WsAction::Compact);
+    let expected = if before.free_bytes > 0 {
+        "Vault file compacted."
+    } else {
+        "Nothing to compact."
+    };
+    assert_eq!(env.notice(), Some(expected), "{:?}", env.error());
+    let after = env.read(|s| s.storage());
+    assert_eq!(after.free_bytes, 0);
+    assert!(after.file_bytes <= before.file_bytes);
+    env.act(WsAction::Compact);
+    assert_eq!(env.notice(), Some("Nothing to compact."));
+    // The vault is still writable after compaction.
+    env.add_entry("Three", SECRET);
+}
+
 // 0012 §1: Rotation/purge ambiguity
 #[test]
 fn records_history_snapshot_restore_archive_merge_conflict_resolve_verify() {

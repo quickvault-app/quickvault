@@ -88,7 +88,7 @@ rather than creating unused workspace scaffolding.
 | qv-encoding | Bounded deterministic CBOR (0004 §3.1): validates hostile input before typed reads, encodes only canonical items, builds AAD/info/transcript arrays; depends on no other qv crate |
 | qv-crypto | Profiles, key hierarchy, encryption, protected memory, X-Wing draft-11 (libcrux-kem), typed LAN record epochs and one-use code keys, ephemeral password authentication, independent VK proofs, final-key confirmation and comparison codes (0013 §15); hybrid signature verification from roadmap 4.3 |
 | qv-model | Canonical payloads, atomic records, compact authenticated-head summaries and deterministic tree projection |
-| qv-store | Hardened SQLite with non-mutating identification, immutable objects, manifests, local snapshots inside the vault (a sealed head-bound index of kept manifests and retained objects, plan 0059), durable-outcome reporting, cooperative inode/directory leases for temporary files and snapshots (on Windows: ACL owner-only rules, reparse-point refusal, file-ID identity, byte-range process locks, named-mutex directory locks and write-through renames, plan 0052), authenticated archives (header, writer, role-verifying reader), new-path restore and the full `verify` pass; no LAN peer state (the retired `lan_link` rows stay head-bound and clear at the next commit; 0013 §9.1), LAN serving reads, peer staging (new device, or merge with local copies of held objects) and receipt-free LAN acceptance through the archive acceptance transaction (0013 §7, §9–10) |
+| qv-store | Hardened SQLite with non-mutating identification, immutable objects, manifests, local snapshots inside the vault (a sealed head-bound index of kept manifests and retained objects, plan 0059; pruned to the room the vault leaves, plan 0060), compaction (`VACUUM INTO` a private temporary sibling, verified, moved over the vault; plan 0060), durable-outcome reporting, cooperative inode/directory leases for temporary files and snapshots (on Windows: ACL owner-only rules, reparse-point refusal, file-ID identity, byte-range process locks, named-mutex directory locks and write-through renames, plan 0052), authenticated archives (header, writer, role-verifying reader), new-path restore and the full `verify` pass; no LAN peer state (the retired `lan_link` rows stay head-bound and clear at the next commit; 0013 §9.1), LAN serving reads, peer staging (new device, or merge with local copies of held objects) and receipt-free LAN acceptance through the archive acceptance transaction (0013 §7, §9–10) |
 | qv-protocol | Key-free hostile-input wire layer: bounded LAN frames, wire labels with exact arity, exact-shape message reader/writer, `lan / 2` profile, feature and error-code registry (roadmap 2.8); typed pairing/exchange/error messages, the one-use code's QR/manual form and endpoint text (roadmap 2.9–2.10, plan 0042); server wire types later; depends only on qv-encoding |
 | qv-sync | Shared causal merge candidates; LAN over TCP: the one-use sync window and the joiner in sync or new-device mode, and the two-way exchange (roadmap 2.9–2.10, plan 0042); remote candidate state and publication orchestration (planned) |
 | qv-core | Session policy, handles, lock cancellation, mutation authorization, snapshot policy/budgets (snapshots kept inside commits; the rotation's recovery file), the `verify` report, and LAN sync windows, sync from a code and new-device join for frontends; strict scanned QR kind/profile/address inspection without network I/O; opaque staged/authenticated vault-import capabilities with complete pre-publication index validation and fresh-local creation |
@@ -116,7 +116,7 @@ streaming attachment operations, local snapshot policy/budgets with their
 authenticated listing, and the `verify` report) and `qv-cli`
 (`qv` with `init`, `info`, `ls`, `search`, `show`, `totp`, `generate`,
 `add`, `edit`, `mv`, `mkdir`, `rm`, `trash ls|restore|empty`,
-`snapshot ls|restore`, `verify`, `copy` and
+`snapshot ls|restore|rm`, `compact`, `verify`, `copy` and
 `totp`/`generate --copy`, `attach add|ls|save|rm`; protected
 prompts/notes, signal cancellation and terminal restoration, escaped and JSON
 output, exit codes). The shared qv-platform Linux X11 clipboard adapter (including usable
@@ -289,9 +289,14 @@ LAN merges, baseline adoption and a conflict resolution that installs a final
 deletion keep a recovery snapshot of their pre-state in the same transaction.
 Explicit deletions (emptying the trash, final deletion, attachment removal,
 history purge) take no copy and, unless the user keeps them, remove the
-snapshots holding the deleted data in the same commit. Budgets are 30 days, 48
-snapshots and 1 GiB of snapshot-only data, pruned oldest first inside the
-commit; a snapshot that cannot fit is skipped, never the commit. Restore
+snapshots holding the deleted data in the same commit. Budgets are 30 days and
+48 snapshots; snapshot-only data uses the room the vault leaves (the file cap
+and the volume's free space less a floor, plan 0060). Any commit prunes the
+oldest when they no longer fit; a snapshot that cannot fit is skipped, never
+the commit. Users may delete one or all. Compaction (0004 §1.4) rewrites the
+file without free pages, automatically after large frees and on request; the
+copy holds the same head, so a crash leaves a valid vault and the anchor is
+unchanged. Restore
 streams the snapshot as an ordinary slotless archive to a private temporary
 file beside the new path and restores that. A VK rotation still writes its
 recovery copy as an archive file in the private snapshot directory (the new

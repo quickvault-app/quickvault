@@ -460,6 +460,13 @@ pub(crate) fn open_opaque_at(
 }
 
 /// Atomic replacement is reserved for anchor metadata, never vault files.
+/// Moves a verified compacted copy over the vault path (0004 §1.4), the one
+/// replacement of a vault file: both hold the same complete state.
+pub(crate) fn replace_vault(copy: &Path, vault: &Path) -> Result<(), StoreError> {
+    let _files = FILES.lock().unwrap_or_else(PoisonError::into_inner);
+    rustix::fs::rename(copy, vault).map_err(errno_err)
+}
+
 pub(crate) fn replace_anchor(from: &Path, to: &Path) -> Result<(), StoreError> {
     let _files = FILES.lock().unwrap_or_else(PoisonError::into_inner);
     rustix::fs::rename(from, to).map_err(errno_err)

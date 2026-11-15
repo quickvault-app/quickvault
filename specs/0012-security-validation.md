@@ -43,7 +43,7 @@ cryptographic audit or platform validation have been completed here.
 | Authentication complexity | 0006: TLS-bound opaque sessions and fixed OPAQUE profile | No token use on another TLS connection, replayed challenge or weak KSF; RFC OPAQUE vectors |
 | Migration coupling | 0002: purpose namespaces | KDF-only upgrade preserves data objects; data upgrade preserves logical causality |
 | Mixed credentials | 0005: complete concurrent records | No synthetic username/password/TOTP combination |
-| Snapshot disk growth | 0007: snapshots inside commits, coalescing/count/age/byte budgets | Repeated changes and syncs keep at most one per interval and prune to the budgets; a snapshot that cannot fit is skipped, never the commit; a commit that cannot be written changes nothing (plan 0059) |
+| Snapshot disk growth | 0007: snapshots inside commits, coalescing/count/age budgets and the room left by live data and free disk; 0004 §1.4 compaction | Repeated changes and syncs keep at most one per interval and prune to the budgets; any commit prunes the oldest when the room shrinks; a snapshot that cannot fit is skipped, never the commit; a commit that cannot be written changes nothing (plan 0059); compaction interrupted before or after its move leaves a valid vault with the same head, and a copy that does not verify changes nothing (plan 0060) |
 | Impossible generator | 0010: feasibility and bounded retries | Empty required class, too few positions and exhausted retries yield errors |
 | Ambiguous trust boundary | 0008/architecture: explicit trusted client | Review every plaintext allocation, renderer and privileged bridge operation |
 | Server-visible record linkage | 0004 §2.2: envelopes carry only object ID/profile/ciphertext | Inspect every server request and stored row: no record/version/attachment ID, chunk index or kind |
@@ -179,6 +179,7 @@ implementation evidence, not claims that this repository already has them.
 
 ## Changelog
 
+- 2026-11-15: The "Snapshot disk growth" row covers room-based pruning and interrupted or unverified compaction (plan 0060).
 - 2026-11-15: The large-vault fixture boundary follows the 8 GiB ciphertext budget; the "Snapshot disk growth" row tests snapshots kept inside commits (plan 0059).
 - 2026-11-09: Require lan/2 engine/composition readiness and hostile-peer/large-vault evidence.
 

@@ -5,11 +5,14 @@
 //!
 //! A commit may keep the manifest it replaces as a snapshot, remove named
 //! snapshots, remove the snapshots that contain given records, and prune by
-//! age, count and bytes. [`plan`] works all of that out before any SQL
-//! changes: the new index, the objects and manifest rows nothing needs any
-//! more, and what to report. Kept manifests are read back and authenticated
-//! as at unlock; bytes count only what snapshots keep beyond the new live
-//! manifest (snapshot-only manifest rows and objects).
+//! age, count and room (plan 0060: live plus snapshot-only data within the
+//! room [`crate::space`] measures). [`plan`] works all of that out before any
+//! SQL changes: the new index, the objects and manifest rows nothing needs
+//! any more, and what to report. Kept manifests are read back and
+//! authenticated as at unlock; bytes count only what snapshots keep beyond
+//! the new live manifest (snapshot-only manifest rows and objects). A commit
+//! that asks nothing of the snapshots still prunes the oldest when they no
+//! longer fit the room, checked first from stored lengths alone.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,14 +27,13 @@ use crate::schema;
 use crate::snapshot_index::{SnapshotIndex, SnapshotRow};
 use crate::vault::{Keys, accepted_profile, scope};
 
-/// The snapshot budgets a commit prunes to (0007 §3.3).
+/// The snapshot budgets a commit that keeps a snapshot prunes to (0007
+/// §3.3). Space is not a budget: snapshot-only data uses the room the vault
+/// does not need, in every commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SnapshotBudgets {
     /// Most snapshots kept.
     pub max_count: u32,
-    /// Most snapshot-only bytes (kept manifests other than the live one,
-    /// and objects only snapshots reference).
-    pub max_bytes: u64,
     /// Oldest age a snapshot may reach, in milliseconds.
     pub max_age_ms: i64,
 }
@@ -59,11 +61,14 @@ impl Request {
 pub struct SnapshotOutcome {
     /// The snapshot this commit kept, if any.
     pub kept: Option<SnapshotRow>,
-    /// The commit was asked to keep one, but it would not fit the byte
-    /// budget even alone, so it was not kept (ordinary snapshots only).
+    /// The commit was asked to keep one, but it would not fit the room even
+    /// alone, so it was not kept (ordinary snapshots only).
     pub skipped_for_space: bool,
     /// The snapshot-only bytes the skipped snapshot needed; 0 otherwise.
     pub needed: u64,
+    /// The snapshot-only bytes the room allowed at that commit; 0 unless
+    /// skipped.
+    pub available: u64,
     /// The snapshots this commit removed (explicitly or by pruning).
     pub removed: Vec<SnapshotRow>,
 }
@@ -162,6 +167,10 @@ pub(crate) struct Inputs<'a> {
     pub(crate) replaced: (&'a Manifest, [u8; 32]),
     /// The new live manifest, and its row hash.
     pub(crate) live: (&'a Manifest, [u8; 32]),
+    /// The new live manifest's sealed length.
+    pub(crate) live_len: u64,
+    /// The room live and snapshot-only data may use ([`crate::space::room`]).
+    pub(crate) room: u64,
 }
 
 /// Decides the commit's snapshot change; `None` when the index stays as it
@@ -171,14 +180,33 @@ pub(crate) fn plan(
     request: &Request,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<Planned>, StoreError> {
-    if request.is_empty() {
+    let (replaced, replaced_hash) = input.replaced;
+    let (live, live_hash) = input.live;
+    let live_ids: BTreeSet<ObjectId> = live.references().iter().map(|r| r.object_id()).collect();
+    let live_bytes = live
+        .references()
+        .iter()
+        .fold(input.live_len, |sum, r| sum.saturating_add(r.length()));
+    // Whatever was asked, prune when the snapshots no longer fit the room.
+    let over_room = match input.old {
+        Some(old) if !old.rows().is_empty() => {
+            let held = crate::space::snapshot_only_bytes(
+                input.conn,
+                old,
+                &live_ids,
+                &live_hash,
+                input.header.key_generation,
+            )?;
+            !crate::space::fits(live_bytes, held, input.room)
+        }
+        _ => false,
+    };
+    if request.is_empty() && !over_room {
         return Ok(None);
     }
     let old = input.old.cloned().unwrap_or_default();
     let mut index = old.clone();
     let mut outcome = SnapshotOutcome::default();
-    let (replaced, replaced_hash) = input.replaced;
-    let (live, live_hash) = input.live;
 
     // Opens a kept manifest, using the in-memory copy of the replaced one.
     let open = |hash: &[u8; 32]| -> Result<(Manifest, u64), StoreError> {
@@ -238,7 +266,7 @@ pub(crate) fn plan(
         }
     }
 
-    if index == old {
+    if index == old && !over_room {
         return Ok(None);
     }
 
@@ -264,9 +292,29 @@ pub(crate) fn plan(
             entry.1 = len;
         }
     }
-    let live_ids: BTreeSet<ObjectId> = live.references().iter().map(|r| r.object_id()).collect();
 
-    if let Some((kind, now, budgets)) = request.keep {
+    // An ordinary snapshot that cannot fit even alone is skipped first, so
+    // no older snapshot is pruned for it.
+    if let Some(row) = kept
+        && row.kind == SnapshotKind::Ordinary
+    {
+        let alone = replaced
+            .references()
+            .iter()
+            .filter(|r| !live_ids.contains(&r.object_id()))
+            .fold(stored_len(input.conn, &replaced_hash)?, |sum, r| {
+                sum.saturating_add(r.length())
+            });
+        if !crate::space::fits(live_bytes, alone, input.room) {
+            outcome.needed = alone;
+            outcome.available = crate::space::available(live_bytes, input.room);
+            outcome.skipped_for_space = true;
+            unkeep(&row, &mut index, &mut counts, replaced);
+            kept = None;
+        }
+    }
+
+    {
         let mut candidates: Vec<SnapshotRow> = index
             .rows()
             .iter()
@@ -294,17 +342,24 @@ pub(crate) fn plan(
             removed.push(*row);
             Ok(())
         };
+        // Age and count apply in a commit that keeps a snapshot; the room
+        // and the retained cap in every commit.
         let mut rest = Vec::new();
         for row in candidates {
-            if now.0.saturating_sub(row.created_at.0) > budgets.max_age_ms {
+            if let Some((_, now, budgets)) = request.keep
+                && now.0.saturating_sub(row.created_at.0) > budgets.max_age_ms
+            {
                 drop_row(&row, &mut index, &mut counts)?;
             } else {
                 rest.push(row);
             }
         }
+        let max_count = request
+            .keep
+            .map_or(usize::MAX, |(_, _, b)| b.max_count as usize);
         let fits = |index: &SnapshotIndex, counts: &Counts| {
-            index.rows().len() <= budgets.max_count as usize
-                && counts.bytes(&live_ids, &live_hash) <= budgets.max_bytes
+            index.rows().len() <= max_count
+                && crate::space::fits(live_bytes, counts.bytes(&live_ids, &live_hash), input.room)
                 && counts.objects.len() <= crate::snapshot_index::MAX_RETAINED
         };
         for row in rest {
@@ -315,18 +370,12 @@ pub(crate) fn plan(
         }
         if !fits(&index, &counts)
             && let Some(row) = kept
-            && kind == SnapshotKind::Ordinary
+            && row.kind == SnapshotKind::Ordinary
         {
             // It does not fit even alone: keep the commit, not the snapshot.
             outcome.needed = counts.bytes(&live_ids, &live_hash);
-            index.remove(&row.id);
-            if let Some(entry) = counts.manifests.get_mut(&row.manifest_hash) {
-                entry.0 = entry.0.saturating_sub(1);
-                if entry.0 == 0 {
-                    counts.manifests.remove(&row.manifest_hash);
-                    counts.remove_manifest(replaced);
-                }
-            }
+            outcome.available = crate::space::available(live_bytes, input.room);
+            unkeep(&row, &mut index, &mut counts, replaced);
             kept = None;
             outcome.skipped_for_space = true;
         }
@@ -361,6 +410,18 @@ pub(crate) fn plan(
         drop_manifests,
         outcome,
     }))
+}
+
+/// Takes back the snapshot this commit was about to keep.
+fn unkeep(row: &SnapshotRow, index: &mut SnapshotIndex, counts: &mut Counts, replaced: &Manifest) {
+    index.remove(&row.id);
+    if let Some(entry) = counts.manifests.get_mut(&row.manifest_hash) {
+        entry.0 = entry.0.saturating_sub(1);
+        if entry.0 == 0 {
+            counts.manifests.remove(&row.manifest_hash);
+            counts.remove_manifest(replaced);
+        }
+    }
 }
 
 /// A stored manifest row's ciphertext length.

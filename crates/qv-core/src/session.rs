@@ -175,6 +175,9 @@ pub(crate) struct Open {
     /// The automatic-policy outcome, for the frontend's stderr warnings
     /// (0011 §4).
     pub(crate) auto_snapshot: Option<SnapshotReport>,
+    /// The last commit kept no snapshot for lack of room (0007 §3.3), until
+    /// the frontend takes the notice.
+    pub(crate) skipped_snapshot: Option<crate::snapshot::SnapshotSpace>,
     /// The archive ID of the recovery snapshot an in-progress destructive
     /// operation pins (0007 §3.2). Shared with the operation's handle so
     /// that dropping the handle releases the pin.
@@ -362,6 +365,7 @@ impl Session {
                 anchor,
                 snapshots,
                 auto_snapshot,
+                skipped_snapshot: None,
                 pin: Arc::new(Mutex::new(None)),
             }))),
             time,
@@ -435,6 +439,9 @@ impl Session {
             crate::snapshot::arm_automatic(ctx.open, now);
             let result = f(ctx);
             crate::snapshot::after_mutation(ctx.open);
+            if result.is_ok() {
+                crate::snapshot::auto_compact(ctx.open);
+            }
             result
         })
     }

@@ -16,6 +16,7 @@ pub(crate) mod groups;
 pub(crate) mod trash;
 
 pub(crate) mod attach;
+pub(crate) mod compact;
 pub(crate) mod history;
 pub(crate) mod snapshot;
 pub(crate) mod verify;

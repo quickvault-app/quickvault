@@ -98,3 +98,4 @@ plan, or a new plan that names the one it supersedes.
 | [0057](0057-video-preview/PLAN.md) | Video preview: playback stalls, player size, first frame before play (owner bug report) | Implemented — seek after end verified; fresh-context review pending |
 | [0058](0058-picker-inactivity/PLAN.md) | File picking and playback: picker inactivity, shared input folders, playing preview (owner bug reports) | Implemented — APK build, phone check and fresh-context review pending |
 | [0059](0059-sizes-and-snapshots/PLAN.md) | Larger vaults and files, snapshots inside the vault, buffered playback (owner request) | Implemented — Android build, phone and Windows checks, fresh-context review pending |
+| [0060](0060-snapshot-space-and-compaction/PLAN.md) | Snapshot space from free room, deleting snapshots, vault compaction (owner request) | Implemented — Windows CI, phone check and fresh-context review pending |

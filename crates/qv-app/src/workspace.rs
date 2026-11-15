@@ -180,6 +180,8 @@ pub enum Pane {
     Rotation,
     /// Integrity verification.
     Verify,
+    /// Vault file size, free space and compaction (plan 0060).
+    Storage,
     /// Unverified header and vault overview.
     About,
 }
@@ -452,6 +454,12 @@ pub enum WsAction {
     OpenAutofillSettings,
     /// Delete snapshots taken before a password change.
     DeleteOldSnapshots,
+    /// Delete one snapshot (0007 §3.3).
+    DeleteSnapshot(String),
+    /// Delete every snapshot of the vault (0007 §3.3).
+    DeleteAllSnapshots,
+    /// Rewrite the vault file without its free space (0004 §1.4).
+    Compact,
     /// Show the recovery phrase after reauthentication.
     ShowPhrase,
     /// Confirm requested recovery words for the displayed phrase.
@@ -475,6 +483,8 @@ pub enum WsAction {
     /// Dismiss the current notice or report.
     Dismiss,
 }
+/// The notice of a change saved without its snapshot (0007 §3.3).
+pub(crate) const SNAPSHOT_SKIPPED: &str = "Saved, but there wasn't enough free space to keep a snapshot of the vault from before this change.";
 /// Confirmation kinds, each with fixed text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfirmKind {
@@ -501,6 +511,9 @@ pub enum ConfirmKind {
     OverBudget(u64),
     /// Delete snapshots taken before the password change.
     OldSnapshots(usize),
+    /// Delete this many snapshots; with the space they use when all of
+    /// them go.
+    DeleteSnapshots(usize, Option<u64>),
     /// Accept a weak new master password.
     WeakPassword,
     /// Device PIN/pattern becomes a vault credential.
@@ -1342,6 +1355,15 @@ impl Controller {
                     .ok_or(AppError::InvalidInput)?;
                 Some(ConfirmKind::OldSnapshots(n))
             }
+            WsAction::DeleteSnapshot(_) => Some(ConfirmKind::DeleteSnapshots(1, None)),
+            WsAction::DeleteAllSnapshots => {
+                let (n, bytes) = self
+                    .read(epoch, |s| {
+                        Ok((s.snapshots()?.snapshots.len(), s.storage()?.snapshot_bytes))
+                    })
+                    .ok_or(AppError::InvalidInput)??;
+                (n > 0).then_some(ConfirmKind::DeleteSnapshots(n, Some(bytes)))
+            }
             _ => None,
         })
     }
@@ -1396,6 +1418,8 @@ impl Controller {
             .spawn(move || {
                 let _wake = crate::controller::WakeOnDrop;
                 let result = op(&session, &token, &controller);
+                // A change saved without its snapshot says so (0007 §3.3).
+                let skipped = session.take_snapshot_skipped().is_some();
                 let mut s = controller.state();
                 if s.lock_gen != generation || token.is_cancelled() {
                     drop(result);
@@ -1410,6 +1434,9 @@ impl Controller {
                 drop(worker);
                 if let Ok(apply) = result {
                     apply(&mut s);
+                    if skipped && let Some(ws) = s.workspace.as_mut() {
+                        ws.notice = Some(SNAPSHOT_SKIPPED);
+                    }
                     return;
                 }
                 if let Some(ws) = s.workspace.as_mut() {

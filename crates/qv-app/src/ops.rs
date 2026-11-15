@@ -1079,6 +1079,32 @@ pub(crate) fn run(
                 }))
             })
         }
+        WsAction::DeleteSnapshot(id) => c.run_op(epoch, None, move |s, _, _| {
+            s.delete_snapshots(&[id])?;
+            Ok(on_ws(|ws| ws.notice = Some("Snapshot deleted.")))
+        }),
+        WsAction::DeleteAllSnapshots => c.run_op(epoch, None, move |s, _, _| {
+            let ids: Vec<String> = s
+                .snapshots()?
+                .snapshots
+                .into_iter()
+                .map(|x| x.archive_id)
+                .collect();
+            if !ids.is_empty() {
+                s.delete_snapshots(&ids)?;
+            }
+            Ok(on_ws(|ws| ws.notice = Some("All snapshots deleted.")))
+        }),
+        WsAction::Compact => c.run_op(epoch, None, move |s, token, _| {
+            let done = s.compact(Some(token))?;
+            Ok(on_ws(move |ws| {
+                ws.notice = Some(if done.is_some() {
+                    "Vault file compacted."
+                } else {
+                    "Nothing to compact."
+                });
+            }))
+        }),
         WsAction::ShowPhrase => {
             let pw = c
                 .peek(epoch, |ws| password(ws, WsField::Password))

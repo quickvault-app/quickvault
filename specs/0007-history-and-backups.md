@@ -120,14 +120,30 @@ document nor an existing local vault: fully verified leased staging and the
 no-replace restore protocol protect publication. It requires explicit new-baseline
 acknowledgement (§3.4), without taking a snapshot of an unmodified local vault.
 
-3.3. Defaults are 30 days, at most 48 snapshots and 1 GiB of snapshot-only data
-per vault: retained manifests other than the live one, plus objects only
-snapshots reference. Prune the oldest snapshots first, in the commit that
-takes a new one, until the count, age and byte budgets fit; a snapshot taken by
-the current operation is never pruned by it. Configurable larger budgets
-require explicit user choice. When the snapshot that a commit must take cannot
-fit even alone, the commit proceeds and reports that the snapshot was skipped
-for space; a recovery snapshot is always kept.
+3.3. Defaults are 30 days and at most 48 snapshots per vault. Snapshot-only
+data (retained manifests other than the live one, plus objects only snapshots
+reference) has no fixed budget: it may use the **room** the vault does not
+need (owner, 2026-11-15; plan 0060). At each commit the room is the lesser of
+the vault file cap (0004 §4.1, `MAX_DB_BYTES`) and the file's current size plus
+the volume's free space minus a floor of 5% of the volume, at least 2 GiB and
+at most 4 GiB (the volume term is left out when free space cannot be measured).
+A commit fits when its live data plus snapshot-only data, plus 1/64 of that sum
+and 64 MiB of allowance, is within the room. Snapshots therefore give way to
+live data and to the device's free space; neither can fail a commit because of
+them.
+
+Prune the oldest snapshots first until the budgets fit. Any commit that no
+longer fits the room prunes, whether or not it takes a snapshot; age and count
+are applied by the commit that takes a new one. A snapshot taken by the current
+operation is never pruned by it. When an ordinary snapshot cannot fit even
+alone, the commit proceeds without it and reports how much it needed and how
+much room there was; frontends tell the user that the change was saved without
+a snapshot. A recovery snapshot is always kept.
+
+The user may delete any snapshot, or all of them, at any time; one commit
+removes them, and their snapshot-only data is released like any unreferenced
+object. Deleted data leaves the file's free pages for reuse; compaction (0004
+§1.4) returns them to the volume.
 
 **Permanent deletion and snapshots (owner, 2026-11-15).** Final deletion and
 history purge also remove every snapshot that contains the deleted versions,
@@ -204,6 +220,12 @@ reference set. Purge acknowledgements must not imply independent copies vanished
    explicit, warned user choice (0004 §6.4).*
 
 ## Changelog
+
+- 2026-11-15: §3.3: snapshot-only data uses the room the vault does not need
+  (file cap and volume free space less a floor) instead of a 1 GiB budget; any
+  commit prunes when it no longer fits; skipped snapshots are reported to the
+  user; the user may delete one or all snapshots (owner request, plan 0060;
+  numbers delegated).
 
 - 2026-11-15: §2.2, §3.1–3.3: snapshots live inside the vault and share its
   objects; they are taken inside commits; explicit deletions take no recovery

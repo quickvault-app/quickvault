@@ -40,6 +40,7 @@
 //! | `rotation_journal` | [`RotationJournal`] codec and independent MACs | 0002 §3.5.4 |
 //! | `rotation_install` | [`PreparedRotation::install`], [`InterruptedRotation`] (restart: complete or roll back), pre-journal leftovers | 0002 §3.5.4; 0005 §5.4 |
 //! | `snapshot_index` / `snapshot_commit` | Local snapshots inside the vault: the sealed head-bound index ([`SnapshotRow`]), what each commit keeps, prunes and releases ([`SnapshotBudgets`], [`SnapshotOutcome`]), listings ([`SnapshotDetail`]) and restore | 0004 §2.5; 0007 §3 |
+//! | `space` / `compact` | Volume and file space, the snapshot room ([`FileSpace`]); rewriting the file without free pages ([`Compaction`]) | 0007 §3.3; 0004 §1.4 |
 //! | `snapshot_inventory` | [`SnapshotInventory`]: cross-generation accounting of snapshot files | 0007 §3.2–3.3 |
 //! | `archive` | [`ArchiveHeader`], [`ArchiveScope`], framing, the archive writer and reader, [`SnapshotDir`] | 0004 §6; 0007 §3 |
 //! | `vault` | [`VaultFile`] (`create`, `open`, `unlock`, `unlock_for_recovery`) and [`UnlockedVault`] (verification, reads) | 0004 §3.6, §5.1, 0002 §8 |
@@ -202,6 +203,8 @@ mod anchor;
 mod archive;
 mod archive_verify;
 mod attachment;
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+mod compact;
 mod crash;
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
@@ -259,6 +262,8 @@ mod snapshot_inventory;
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 mod snapshot_tests;
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+mod space;
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 mod sqlite;
 mod validation;
@@ -318,6 +323,8 @@ pub use sink::{HeadSink, NoSink};
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 pub use vault_import::{PendingVaultImport, VerifiedVaultImport};
 
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+pub use compact::Compaction;
 pub use manifest::{MANIFEST_FORMAT, Manifest, ObjectRef, RecordEntry, VersionRef};
 pub use object::ObjectEnvelope;
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
@@ -337,6 +344,8 @@ pub use snapshot_index::{MAX_SNAPSHOTS, SnapshotRow};
 pub use snapshot_inventory::{
     InventoryRow, MAX_INVENTORY_BYTES, MAX_INVENTORY_ROWS, SnapshotInventory, UnverifiedInventory,
 };
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+pub use space::FileSpace;
 #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 pub use unsupported::{
     AnchorDir, InterruptedRotation, MAX_ANCHOR_BYTES, PendingVaultImport, PreparedRotation,

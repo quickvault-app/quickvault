@@ -387,7 +387,15 @@ pub(crate) fn open_opaque(path: &Path, private: bool) -> Result<ArchiveFile, Sto
     Ok(ArchiveFile { handle, offset: 0 })
 }
 
-/// Atomic replacement is reserved for anchor metadata, never vault files.
+/// Moves a verified compacted copy over the vault path (0004 §1.4), the one
+/// replacement of a vault file: both hold the same complete state. The
+/// caller has closed SQLite's handle on the vault; ours share delete.
+pub(crate) fn replace_vault(copy: &Path, vault: &Path) -> Result<(), StoreError> {
+    let _files = FILES.lock().unwrap_or_else(PoisonError::into_inner);
+    qv_win::fs::rename_replace(copy, vault).map_err(os_err)
+}
+
+/// Atomic replacement of anchor metadata.
 pub(crate) fn replace_anchor(from: &Path, to: &Path) -> Result<(), StoreError> {
     let _files = FILES.lock().unwrap_or_else(PoisonError::into_inner);
     qv_win::fs::rename_replace(from, to).map_err(os_err)

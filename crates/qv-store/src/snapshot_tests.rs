@@ -18,9 +18,46 @@ const DAY: i64 = 24 * 60 * 60 * 1000;
 fn budgets() -> SnapshotBudgets {
     SnapshotBudgets {
         max_count: 48,
-        max_bytes: 1 << 30,
         max_age_ms: 30 * DAY,
     }
+}
+
+/// Forces the room every commit measures until dropped.
+struct Room;
+impl Room {
+    fn set(room: u64) -> Self {
+        crate::space::ROOM.with(|r| r.set(Some(room)));
+        Self
+    }
+}
+impl Drop for Room {
+    fn drop(&mut self) {
+        crate::space::ROOM.with(|r| r.set(None));
+    }
+}
+
+/// The smallest room in which `total` live and snapshot-only bytes fit.
+fn room_for(total: u64) -> u64 {
+    total + total / 64 + crate::space::ALLOWANCE
+}
+
+/// The live manifest's referenced bytes plus its sealed length.
+fn live_bytes(u: &UnlockedVault) -> u64 {
+    let len: i64 = u
+        .file
+        .conn
+        .query_row(
+            "SELECT octet_length(ciphertext) FROM manifest WHERE manifest_hash = ?1",
+            [u.state.head.manifest_hash.as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    u.manifest()
+        .references()
+        .iter()
+        .map(|r| r.length())
+        .sum::<u64>()
+        + len as u64
 }
 
 fn rows(u: &UnlockedVault, table: &str) -> i64 {
@@ -194,25 +231,81 @@ fn snapshot_skips_unchanged_and_duplicate_and_prunes_to_budgets() {
     assert_eq!(outcome.removed, vec![second]);
     let third = outcome.kept.unwrap();
 
-    // Byte budget 0: an ordinary snapshot is skipped after pruning the rest,
+    // No room at all: an ordinary snapshot is skipped and the rest pruned,
     // never the commit; a recovery snapshot is kept anyway.
-    let none = SnapshotBudgets {
-        max_bytes: 0,
-        ..budgets()
-    };
+    let full = Room::set(0);
     edit_with(&mut u, r, "five", |w| {
-        w.keep_snapshot(SnapshotKind::Ordinary, Timestamp(40), none);
+        w.keep_snapshot(SnapshotKind::Ordinary, Timestamp(40), budgets());
     });
     let outcome = u.take_snapshot_outcome().unwrap();
     assert!(outcome.skipped_for_space && outcome.kept.is_none() && outcome.needed > 0);
+    assert_eq!(outcome.available, 0);
     assert_eq!(outcome.removed, vec![third]);
     assert!(u.snapshot_rows().is_empty());
     edit_with(&mut u, r, "six", |w| {
-        w.keep_snapshot(SnapshotKind::Recovery, Timestamp(50), none);
+        w.keep_snapshot(SnapshotKind::Recovery, Timestamp(50), budgets());
     });
     let kept = u.take_snapshot_outcome().unwrap().kept.unwrap();
     assert_eq!(kept.kind, SnapshotKind::Recovery);
     assert_eq!(u.snapshot_rows(), &[kept]);
+    drop(full);
+    u.verify_all(&|| false).unwrap();
+}
+
+// 0012 §1: Snapshot disk growth
+#[test]
+fn snapshot_room_prunes_in_any_commit_and_skips_before_pruning() {
+    let (d, a) = (TestDir::new(), TestDir::new());
+    let (p, dir) = copy_fixture(&d, &a, "v.qvault");
+    let mut u = unlock(&p, &dir, PASSWORD).unwrap();
+    let (r, big, other) = (
+        RecordId::generate().unwrap(),
+        RecordId::generate().unwrap(),
+        RecordId::generate().unwrap(),
+    );
+    edit(&mut u, r, "one");
+    tombstone(&mut u, r, |w| {
+        w.keep_snapshot(SnapshotKind::Ordinary, Timestamp(1_000), budgets());
+    });
+    let small = u.take_snapshot_outcome().unwrap().kept.unwrap();
+    let held = u.file_space().unwrap().snapshot_bytes;
+    assert!(held > 0);
+
+    // Removing a large record would need a snapshot that cannot fit even
+    // alone, though the small one still does: only the new one is skipped.
+    let without = live_bytes(&u);
+    edit(&mut u, big, &"x".repeat(150_000));
+    let with = live_bytes(&u);
+    let big_len = with - without;
+    assert!(big_len > 100_000 && held < big_len / 4);
+    let room = Room::set(room_for(with - big_len / 2));
+    tombstone(&mut u, big, |w| {
+        w.keep_snapshot(SnapshotKind::Ordinary, Timestamp(2 * DAY), budgets());
+    });
+    let outcome = u.take_snapshot_outcome().unwrap();
+    assert!(outcome.skipped_for_space && outcome.kept.is_none());
+    assert!(outcome.needed > big_len / 2 && outcome.available < outcome.needed);
+    assert!(outcome.available >= held);
+    assert!(outcome.removed.is_empty());
+    assert_eq!(u.snapshot_rows(), &[small]);
+    drop(room);
+
+    // A commit that asks nothing of the snapshots prunes the oldest once
+    // they no longer fit (the device ran low on space).
+    let room = Room::set(room_for(live_bytes(&u)));
+    edit(&mut u, other, "anything");
+    let outcome = u.take_snapshot_outcome().unwrap();
+    assert_eq!(outcome.removed, vec![small]);
+    assert!(outcome.kept.is_none() && !outcome.skipped_for_space);
+    assert!(u.snapshot_rows().is_empty());
+    assert_eq!(rows(&u, "manifest"), 1);
+    // With nothing left to prune, later commits change no index.
+    edit(&mut u, other, "again");
+    assert_eq!(u.take_snapshot_outcome(), None);
+    drop(room);
+    drop(u);
+    let u = unlock(&p, &dir, PASSWORD).unwrap();
+    assert!(u.snapshot_rows().is_empty());
     u.verify_all(&|| false).unwrap();
 }
 

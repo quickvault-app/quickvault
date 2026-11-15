@@ -332,13 +332,20 @@ release, but no longer gates the feature.
   its size; a LAN sync or join that will receive over 256 MiB names the size
   before receiving and shows progress while it does. The Linux viewer refuses
   non-MP4 media over 256 MiB with a "save a copy" explanation (0003 §6.4).
-- **Snapshots** (plan 0059). Security settings list the vault's snapshots
+- **Snapshots** (plans 0059, 0060). Security settings list the vault's snapshots
   (time, kind, the space each keeps) with restore to a new vault, and say that
   snapshots live in the vault file, so an exported archive is the backup
   against losing it. Emptying the trash, deleting an item permanently,
   removing an attachment and purging history name how many snapshots contain
   the data and remove them too unless "Keep in snapshots" is chosen (0007
-  §3.3).
+  §3.3). Each snapshot can be deleted, and "Delete all" removes every one
+  after a confirmation naming how many there are and the space they use. When
+  a change was saved without its snapshot for lack of room, the change's
+  notice says so.
+- **Storage** (plan 0060). Settings show the vault file's size, the space
+  inside it that compaction can free, the space snapshots use and the
+  volume's free space, with "Compact now" (0004 §1.4). Compaction also runs by
+  itself after large deletions.
 - **Android shell** (owner, 2026-11-07; plan 0044). The app's content stays
   clear of the status bar, display cutout, navigation bar and keyboard; the
   system bars use the theme's colours. Back does what Escape does (closes a
@@ -588,6 +595,8 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
    not reconsider native input or a custom engine just for memory-copy concerns.
 
 ## Changelog
+
+- 2026-11-15: §1.8 snapshot deletion (one or all), the skipped-snapshot notice and the Storage settings with compaction (owner request, plan 0060).
 
 - 2026-11-15: §1.8: large-data warnings and the 256 MiB Linux media preview
   bound; snapshot listing and the deletion choice for snapshots (owner
