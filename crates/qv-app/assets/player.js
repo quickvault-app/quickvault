@@ -658,6 +658,24 @@ function wirePlayer(player){
     // The disc turns with the playback position (a turn per 6 s), so it is
     // still while paused and follows the slider while seeking (owner request).
     const disc=eq?player.closest(".v-audio")?.querySelector(".v-disc"):null;
+    // It eases toward the position's angle, so a slider drag turns it
+    // smoothly. A jump drops whole turns first: it spins at most about one
+    // turn more, in the seek's direction.
+    let angle=null,target=0,spinFrame=0,spunAt=0;
+    const spin=now=>{
+        let delta=target-angle;
+        if(Math.abs(delta)>360){angle+=Math.sign(delta)*360*Math.floor(Math.abs(delta)/360);delta=target-angle;}
+        angle+=delta*(1-Math.exp(-Math.min(now-spunAt,100)/90));
+        spunAt=now;
+        if(Math.abs(target-angle)<0.05)angle=target;
+        disc.style.transform=`rotate(${angle%360}deg)`;
+        spinFrame=angle===target?0:requestAnimationFrame(spin);
+    };
+    const turn=position=>{
+        target=position*60;
+        if(angle===null){angle=target;disc.style.transform=`rotate(${angle%360}deg)`;return;}
+        if(!spinFrame){spunAt=performance.now();spinFrame=requestAnimationFrame(spin);}
+    };
     // A reused card starts on the CSS loop until this element is routed.
     if(eq&&levels.get(media)?.context!==audio){eq.removeAttribute("data-live");for(const bar of bars)bar.style.removeProperty("height");}
     // Stopping glides the bars down from where they are: a removed animation
@@ -689,7 +707,7 @@ function wirePlayer(player){
         if(!dragging){seek.max=String(duration||1);seek.value=String(Math.min(media.currentTime,duration||0));}
         seek.style.setProperty("--p",`${duration?100*Number(seek.value)/duration:0}%`);
         time.textContent=`${clock(dragging?Number(seek.value):media.currentTime)} / ${clock(duration)}`;
-        if(disc)disc.style.transform=`rotate(${((dragging?Number(seek.value):media.currentTime)*60)%360}deg)`;
+        if(disc)turn(dragging?Number(seek.value):media.currentTime);
         drawBars();
     };
     const tick=()=>{draw();frame=media.paused?0:requestAnimationFrame(tick);};

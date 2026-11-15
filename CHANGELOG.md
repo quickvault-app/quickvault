@@ -15,7 +15,7 @@ Dates are ISO 8601. Newest first within each section.
   documentation duties (owner request).
 - 2026-11-15: The audio preview's bars rest until you press Play and glide
   down when you pause, and the disc turns with the playback position: still
-  while paused, following the slider while seeking (owner request, plan 0061). On Android they then follow the playing sound; on
+  while paused, easing after the slider while seeking (owner request, plan 0061). On Android they then follow the playing sound; on
   Linux and Windows they loop while playing. Known limit: WebKitGTK's Web
   Audio routing drops about a second of sound when it starts and adds
   silence after each pause, so Linux does not use it.
