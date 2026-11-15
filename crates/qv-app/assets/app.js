@@ -154,6 +154,10 @@ function activity(){
     document.getElementById("qv-activity")?.dispatchEvent(new Event("input",{bubbles:true}));
 }
 for(const name of ["pointermove","wheel","scroll","touchstart"])document.addEventListener(name,activity,{capture:true,passive:true});
+// A playing audio or video preview counts too (owner, 2026-11-15): media
+// reports timeupdate only while it plays or seeks. It does not bubble, so
+// listen in the capture phase.
+document.addEventListener("timeupdate",activity,{capture:true,passive:true});
 // Touch: holding an item row for 450 ms selects it, and holding the Vault
 // tab opens the vault switcher (0009 §1.8, plan 0045).
 // The hold becomes a Ctrl-click on the row's open button, the input that

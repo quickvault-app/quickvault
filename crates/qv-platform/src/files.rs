@@ -2,6 +2,10 @@
 
 //! Explicit user-selected files, anchored to no-follow directory descriptors
 //! (0011 §4 attachment path rules). Shared by the CLI and the Linux app.
+//! Input ancestors only need to be real directories: the bytes are copied into
+//! the vault, so a folder other users can change is fine (owner, 2026-11-15).
+//! Output ancestors must be owned by the user or root and not writable by
+//! group or others.
 //! Errors are redacted: no path or OS message is reported.
 use crate::{Cancellation, PlatformError};
 use rustix::fs::{self, FileType, Mode, OFlags, Stat};
@@ -25,17 +29,19 @@ fn io_error(e: std::io::Error) -> PlatformError {
         errno_error(rustix::io::Errno::from_raw_os_error(code))
     })
 }
-fn directory(fd: &OwnedFd) -> Result<(), PlatformError> {
+fn directory(fd: &OwnedFd, owned: bool) -> Result<(), PlatformError> {
     let s = fs::fstat(fd).map_err(errno_error)?;
     if FileType::from_raw_mode(s.st_mode) != FileType::Directory
-        || s.st_mode & 0o022 != 0
-        || (s.st_uid != 0 && s.st_uid != rustix::process::geteuid().as_raw())
+        || (owned
+            && (s.st_mode & 0o022 != 0
+                || (s.st_uid != 0 && s.st_uid != rustix::process::geteuid().as_raw())))
     {
         return Err(PlatformError::Io);
     }
     Ok(())
 }
-fn parent(path: &Path) -> Result<(OwnedFd, OsString), PlatformError> {
+/// `owned`: every ancestor must also pass the output ownership rule.
+fn parent(path: &Path, owned: bool) -> Result<(OwnedFd, OsString), PlatformError> {
     let final_part = path
         .as_os_str()
         .as_encoded_bytes()
@@ -59,13 +65,13 @@ fn parent(path: &Path) -> Result<(OwnedFd, OsString), PlatformError> {
         Mode::empty(),
     )
     .map_err(errno_error)?;
-    directory(&fd)?;
+    directory(&fd, owned)?;
     for part in &parts[..parts.len() - 1] {
         match part {
             Component::RootDir | Component::CurDir => {}
             Component::Normal(p) => {
                 fd = fs::openat(&fd, *p, flags, Mode::empty()).map_err(errno_error)?;
-                directory(&fd)?;
+                directory(&fd, owned)?;
             }
             _ => return Err(PlatformError::Io),
         }
@@ -84,7 +90,7 @@ pub struct Input {
 impl Input {
     /// Open a regular file of at most `max` bytes (`LimitExceeded` above it).
     pub fn open(path: &Path, max: u64, cancel: Cancellation) -> Result<Self, PlatformError> {
-        let (dir, name) = parent(path)?;
+        let (dir, name) = parent(path, false)?;
         let fd = fs::openat(
             &dir,
             &name,
@@ -159,7 +165,7 @@ pub struct Output {
 impl Output {
     /// Create a new 0600 regular file; an existing path is refused.
     pub fn create(path: &Path, cancel: Cancellation) -> Result<Self, PlatformError> {
-        let (parent, name) = parent(path)?;
+        let (parent, name) = parent(path, true)?;
         let fd = fs::openat(
             &parent,
             &name,
@@ -273,6 +279,9 @@ mod tests {
         std::fs::set_permissions(dir.join("shared"), std::fs::Permissions::from_mode(0o777))
             .unwrap();
         assert!(Output::create(&dir.join("shared/out"), never()).is_err());
+        // Input may come from a folder others can change; it is only copied.
+        std::fs::write(dir.join("shared/in"), b"1").unwrap();
+        assert!(Input::open(&dir.join("shared/in"), 1024, never()).is_ok());
         let out = dir.join("new");
         let mut output = Output::create(&out, Arc::new(|| true)).unwrap();
         assert!(output.write(b"x").is_err());
@@ -283,7 +292,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
-    fn files_absolute_paths_follow_actual_ancestor_ownership() {
+    fn files_absolute_output_paths_follow_actual_ancestor_ownership() {
         let dir = private("absolute");
         std::fs::write(dir.join("real"), b"1").unwrap();
         let absolute = std::fs::canonicalize(dir.join("real")).unwrap();
@@ -293,7 +302,9 @@ mod tests {
             use std::os::unix::fs::MetadataExt;
             s.mode() & 0o022 == 0 && (s.uid() == 0 || s.uid() == euid)
         });
-        assert_eq!(Input::open(&absolute, 1024, never()).is_ok(), safe);
+        assert!(Input::open(&absolute, 1024, never()).is_ok());
+        let out = absolute.with_file_name("out");
+        assert_eq!(Output::create(&out, never()).is_ok(), safe);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

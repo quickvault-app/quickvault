@@ -4,10 +4,11 @@
 //! 0009 §5.1; plan 0052), with the API of the Unix module.
 //!
 //! The path is made lexically absolute. Every component down to the parent
-//! must be a real directory, not a reparse point, that no other account can
-//! delete, rename or re-permission (adding new names cannot replace an
-//! existing one); the parent must also give other accounts no right to add
-//! or remove entries. The file itself is opened without following a reparse
+//! must be a real directory, not a reparse point. For output, no other
+//! account may delete, rename or re-permission those directories (adding new
+//! names cannot replace an existing one), and the parent must also give other
+//! accounts no right to add or remove entries. Input skips those ACL rules:
+//! its bytes are only copied into the vault (owner, 2026-11-15). The file itself is opened without following a reparse
 //! point. Unlike `openat`, the component checks and the open are separate
 //! steps, so identity is rechecked at EOF and on finish. Errors are
 //! redacted: no path or OS message is reported.
@@ -30,18 +31,23 @@ fn io_error(e: std::io::Error) -> PlatformError {
     }
 }
 
-fn check_dir(path: &Path, rule: Rule) -> Result<(), PlatformError> {
+/// A real directory that also meets `rule`, when given.
+fn check_dir(path: &Path, rule: Option<Rule>) -> Result<(), PlatformError> {
     let dir = qv_win::fs::open_nofollow(path, Access::Inspect).map_err(io_error)?;
-    if qv_win::fs::kind_of(&dir).map_err(io_error)? != Kind::Dir
-        || !qv_win::fs::meets(&dir, rule).map_err(io_error)?
+    if qv_win::fs::kind_of(&dir).map_err(io_error)? != Kind::Dir {
+        return Err(PlatformError::Io);
+    }
+    if let Some(rule) = rule
+        && !qv_win::fs::meets(&dir, rule).map_err(io_error)?
     {
         return Err(PlatformError::Io);
     }
     Ok(())
 }
 
-/// Checks the components of `path` and returns its absolute form.
-fn checked(path: &Path) -> Result<PathBuf, PlatformError> {
+/// Checks the components of `path` and returns its absolute form; `owned`
+/// applies the output ACL rules too.
+fn checked(path: &Path, owned: bool) -> Result<PathBuf, PlatformError> {
     let raw = path.as_os_str().as_encoded_bytes();
     if raw.is_empty() || raw.ends_with(b"\\") || raw.ends_with(b"/") {
         return Err(PlatformError::Io);
@@ -65,7 +71,7 @@ fn checked(path: &Path) -> Result<PathBuf, PlatformError> {
         } else {
             Rule::NoForeignReplace
         };
-        check_dir(&at, rule)?;
+        check_dir(&at, owned.then_some(rule))?;
     }
     Ok(absolute)
 }
@@ -91,7 +97,7 @@ pub struct Input {
 impl Input {
     /// Open a regular file of at most `max` bytes (`LimitExceeded` above it).
     pub fn open(path: &Path, max: u64, cancel: Cancellation) -> Result<Self, PlatformError> {
-        let path = checked(path)?;
+        let path = checked(path, false)?;
         let file = qv_win::fs::open_nofollow(&path, Access::Read).map_err(io_error)?;
         if qv_win::fs::kind_of(&file).map_err(io_error)? != Kind::File {
             return Err(PlatformError::Io);
@@ -144,7 +150,7 @@ pub struct Output {
 impl Output {
     /// Create a new owner-only regular file; an existing path is refused.
     pub fn create(path: &Path, cancel: Cancellation) -> Result<Self, PlatformError> {
-        let path = checked(path)?;
+        let path = checked(path, true)?;
         let file = qv_win::fs::create_private_file(&path).map_err(io_error)?;
         Ok(Self {
             id: qv_win::fs::file_id(&file).map_err(io_error)?,
@@ -218,8 +224,9 @@ mod tests {
     }
 
     #[test]
-    fn files_refuse_shared_parents_and_cancel() {
+    fn files_refuse_shared_output_parents_and_cancel() {
         let dir = private("shared");
+        std::fs::write(dir.join("in"), b"1").unwrap();
         let everyone = qv_win::security::Sid::everyone();
         qv_win::fs::set_dacl(
             &dir,
@@ -232,6 +239,8 @@ mod tests {
         )
         .unwrap();
         assert!(Output::create(&dir.join("x"), never()).is_err());
+        // Input may come from a folder others can change; it is only copied.
+        assert!(Input::open(&dir.join("in"), 1024, never()).is_ok());
         qv_win::fs::set_dacl(&dir, qv_win::security::FILE_ALL_ACCESS, &[]).unwrap();
         let mut out = Output::create(&dir.join("y"), Arc::new(|| true)).unwrap();
         assert!(out.write(b"z").is_err());

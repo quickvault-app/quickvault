@@ -896,9 +896,9 @@ impl Controller {
         }
         self.lock();
         #[cfg(target_os = "linux")]
-        let files_safe = qv_core::platform::files::Input::open(
-            &self.0.base.join("source.bin"),
-            1024,
+        // Output follows the ancestor owner rule; input no longer does.
+        let files_safe = qv_core::platform::files::Output::create(
+            &self.0.base.join("probe.bin"),
             Arc::new(|| false),
         )
         .is_ok();

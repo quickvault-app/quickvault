@@ -1022,7 +1022,7 @@ fn security_settings_password_change_phrase_redisplay_and_rotation() {
 
 // 0012 §1: Ambiguous trust boundary
 #[test]
-fn attachments_follow_path_rules_and_round_trip_where_ancestors_are_safe() {
+fn attachments_follow_path_rules_and_save_where_ancestors_are_safe() {
     let _k = KDF.lock().unwrap_or_else(|p| p.into_inner());
     let env = Env::unlocked();
     let e = env.add_entry("Files", SECRET);
@@ -1032,14 +1032,9 @@ fn attachments_follow_path_rules_and_round_trip_where_ancestors_are_safe() {
     env.put(WsField::Path, "relative.bin");
     env.act(WsAction::AddAttachment(e));
     assert_eq!(env.error(), Some(AppError::InvalidInput));
+    // Input ancestors need no owner rule: the bytes are only copied in.
     env.put(WsField::Path, input.to_str().unwrap());
     env.act(WsAction::AddAttachment(e));
-    let safe = ancestors_safe(&input);
-    if !safe {
-        // This host's ancestors fail the 0011 §4 owner rule: refusal is correct.
-        assert_eq!(env.error(), Some(AppError::InvalidInput));
-        return;
-    }
     assert_eq!(env.error(), None);
     let rows = env.read(|s| views::attachments(s, e));
     assert_eq!(rows.len(), 1);
@@ -1052,6 +1047,11 @@ fn attachments_follow_path_rules_and_round_trip_where_ancestors_are_safe() {
         Some(ConfirmKind::SaveAttachment)
     );
     env.act(WsAction::Answer(true));
+    if !ancestors_safe(&out) {
+        // This host's ancestors fail the 0011 §4 output rule: refusal is correct.
+        assert!(env.error().is_some());
+        return;
+    }
     assert_eq!(env.notice(), Some("Attachment saved."));
     assert_eq!(std::fs::read(&out).unwrap(), b"attachment-bytes");
     // Never overwrite an existing destination.

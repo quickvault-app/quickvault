@@ -65,9 +65,8 @@ try{
  stage=62;const root=byId("validation-result").getAttribute("data-fixture-root");
  await tap("entry-menu");await until(()=>!!$("#menu-attachments"));await tap("menu-attachments");await until(()=>title()==="Attachments");
  await until(()=>!!$("#ws-path"));input("ws-path",root+"/source.bin");input("ws-attach-name","engine-canary.bin");await tap("add-attachment");
- await until(()=>!!$(".notice")||!!$(".error"));
- const filesSafe=!$(".error");
- if(filesSafe){await until(()=>!!button("Save…"));input("ws-path",root+"/output.bin");await click("Save…");await until(()=>!!$("#confirm-continue"));await tap("confirm-continue");await until(()=>notice().includes("Attachment saved."))}
+ await until(()=>!!$(".notice")||!!$(".error"));if($(".error"))throw new Error("attachment input refused");
+ await until(()=>!!button("Save…"));input("ws-path",root+"/output.bin");await click("Save…");await until(()=>!!$("#confirm-continue"));await tap("confirm-continue");await until(()=>notice().includes("Attachment saved.")||!!$(".error"))
  await dismissErrors();
  stage=63;await tap("nav-settings");await until(()=>!!$("#settings-archives"));await tap("settings-archives");await until(()=>title()==="Archives");
  input("ws-path",root+"/exports");await tap("export-archive");await until(()=>($(".report")?.textContent||"").includes("Archive published:"));

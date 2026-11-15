@@ -953,6 +953,13 @@ Dates are ISO 8601. Newest first within each section.
   vault after a minute: while a picker is open the inactivity lock waits
   5 minutes, and closing the picker counts as activity. Screen lock and sleep
   still lock at once (owner bug report, plan 0058).
+- 2026-11-15: Files can be attached from folders other users can change (for
+  example a group-writable music folder); the app showed a misleading "Check
+  the input bounds" error. Saving files out still requires a folder only you
+  can change (owner decision, plan 0058).
+- 2026-11-15: The vault no longer locks for inactivity while an audio or
+  video preview is playing; a paused preview still locks after a minute
+  (owner bug report, plan 0058).
 - 2026-11-14: Video previews on Android have a full-screen button again: the
   player fills the screen with the system bars hidden; the button, Back,
   closing the preview or leaving the app ends it. A tap that only brings the

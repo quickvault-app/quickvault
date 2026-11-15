@@ -171,7 +171,9 @@ release, but no longer gates the feature.
   as activity: keys, clicks, typing, pointer movement, scrolling and touch.
   Pointer movement and scrolling are reported at most once a second, without
   positions, because the webview bridge forwards only click, input, change,
-  key and focus events. The app sees no activity while a system file picker
+  key and focus events. A playing audio or video preview also counts as
+  activity, reported the same way (owner bug report, 2026-11-15); a paused
+  one does not. The app sees no activity while a system file picker
   is open, so the limit is then 5 minutes, and closing the picker (choosing
   or cancelling) counts as activity. Screen lock, sleep and lost protection
   still lock at once (owner bug report, 2026-11-15; plan 0058).
@@ -575,6 +577,8 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
 
 ## Changelog
 
+- 2026-11-15: §1.8 Inactivity: a playing audio or video preview counts as
+  activity (owner bug report, plan 0058).
 - 2026-11-15: §1.8 Inactivity: an open system file picker lengthens the
   inactivity limit to 5 minutes; closing it counts as activity (owner bug
   report; limit delegated by the owner, standing 2026-11-02; plan 0058).

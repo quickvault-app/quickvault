@@ -117,7 +117,7 @@ fn with_vault(h: &Home, args: &[&str]) -> Vec<String> {
 }
 
 /// Runs from the home directory: attachment sources are relative paths
-/// there (an absolute path through the shared `/tmp` is refused).
+/// there (an absolute output path through the shared `/tmp` is refused).
 fn run_as(h: &Home, wrap: impl Fn(Command) -> Command, password: &str, args: &[&str]) -> Output {
     let mut c = h.qv(with_vault(h, args));
     c.current_dir(&h.root);
