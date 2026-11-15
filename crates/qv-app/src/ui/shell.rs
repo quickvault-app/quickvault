@@ -530,7 +530,9 @@ pub(crate) fn Shell(controller: Controller, view: ShellView, palette: Signal<boo
             div { class: "toasts",
                 if live.clipboard > 0 {
                     div { class: "toast", role: "status", Svg { icon: Icon::Copy } span { "Copied · clears in {live.clipboard} s" }
-                        span { class: "bar w{live.clipboard.div_ceil(2)}" }
+                        // One width per second with a 1 s linear transition, so it
+                        // drains smoothly to 0 (classes: the CSP forbids inline styles).
+                        span { class: "bar drain{live.clipboard.saturating_sub(1).min(19)}" }
                     }
                 }
                 if let Some(e) = error {

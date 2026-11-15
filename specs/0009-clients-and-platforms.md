@@ -279,11 +279,12 @@ release, but no longer gates the feature.
   summaries before and after the round; nothing extra is exchanged.
 - **Conflict comparison** (owner, 2026-11-07; plan 0044). A conflicted record
   is shown as one comparison: a column per version (time and state) and a
-  row per property, including colour, group, type and expiry. Equal values
+  row per property, including colour, group, type and expiry, and a field's
+  name, type, hidden setting and position. Equal values
   appear once; different ones side by side. Protected values are compared on
   the device and shown as same/different, revealed per version under 0008
-  §4. Versions with no visible difference say so. Resolving still chooses one
-  complete version (0005 §2.5). A conflicted entry's page and every item list
+  §4. Versions with no visible difference say so, and each stays choosable.
+  Resolving still chooses one complete version (0005 §2.5). A conflicted entry's page and every item list
   with conflicts link to the comparison (plan 0045).
 - **Quick unlock first** (owner, 2026-11-07; plan 0045). Where quick unlock
   is enrolled for the selected vault, the locked screen offers it first: the
@@ -352,8 +353,10 @@ release, but no longer gates the feature.
 - **Android shell** (owner, 2026-11-07; plan 0044). The app's content stays
   clear of the status bar, display cutout, navigation bar and keyboard; the
   system bars use the theme's colours. Back does what Escape does (closes a
-  menu or viewer, leaves a selection, cancels a form, goes up one screen,
-  leaves create/recover/join). Where nothing is left to go back to, the first
+  menu or viewer, cancels a running sync code window or closes its receipt,
+  leaves a selection, cancels a form, goes up one screen, leaves
+  create/recover/join). While the on-screen keyboard is open, the tab bar is
+  hidden (plan 0062). Where nothing is left to go back to, the first
   Back says that another Back closes QuickVault, and only a second Back within
   2 seconds closes it.
 
@@ -599,6 +602,12 @@ does not establish input cleanup, keystore enforcement or autofill-origin trust.
 
 ## Changelog
 
+- 2026-11-15: §1.8 conflict comparison: field names, types, hidden settings
+  and order count as visible differences; every version stays choosable
+  (owner QA, plan 0062).
+- 2026-11-15: §1.8 Android shell: Back cancels a running sync code window or
+  closes its receipt; the tab bar hides while the keyboard is open (owner
+  QA, plan 0062).
 - 2026-11-15: §1.8: the audio card's bars rest until playback starts and
   follow the playing sound where the engine can analyse it cleanly (owner
   request, plan 0061).

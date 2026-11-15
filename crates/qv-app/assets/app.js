@@ -194,5 +194,18 @@ document.addEventListener("keyup",event=>{
     const el=document.activeElement;
     if(el instanceof HTMLButtonElement)el.blur();
 },true);
+// The on-screen keyboard shrinks the page (Android pads it by the keyboard),
+// which would lift the phone tab bar onto the keyboard: while a field has
+// focus on a touch screen and the page is at most 80% of its tallest height
+// at this width, the root is marked and CSS hides the tab bar (plan 0062).
+let tallest=0,tallWidth=0;
+const keyboard=()=>{
+    if(window.innerWidth!==tallWidth){tallWidth=window.innerWidth;tallest=0;}
+    tallest=Math.max(tallest,window.innerHeight);
+    const field=document.activeElement?.matches("input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea");
+    document.documentElement.toggleAttribute("data-ime",coarse.matches&&!!field&&window.innerHeight<=tallest*0.8);
+};
+window.addEventListener("resize",keyboard,{passive:true});
+for(const name of ["focusin","focusout"])document.addEventListener(name,()=>setTimeout(keyboard,0),true);
 // Clipboard commands must go from Rust to the OS with bounded ownership.
 for(const name of ["copy","cut"])document.addEventListener(name,event=>event.preventDefault());

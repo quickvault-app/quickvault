@@ -459,6 +459,8 @@ button.set-row:hover:enabled{background:var(--raised)}
 .toast .ico{color:var(--toast-acc)}
 .toast button{border:0;background:none;color:var(--toast-acc);font-weight:600;padding:2px 4px}
 .toast .bar{position:absolute;left:0;bottom:0;height:2px;background:var(--toast-acc);transition:width 1s linear}
+/* The clipboard countdown: 20 s, one step per second (plan 0062). */
+.drain0{width:0.0%}.drain1{width:5.26%}.drain2{width:10.53%}.drain3{width:15.79%}.drain4{width:21.05%}.drain5{width:26.32%}.drain6{width:31.58%}.drain7{width:36.84%}.drain8{width:42.11%}.drain9{width:47.37%}.drain10{width:52.63%}.drain11{width:57.89%}.drain12{width:63.16%}.drain13{width:68.42%}.drain14{width:73.68%}.drain15{width:78.95%}.drain16{width:84.21%}.drain17{width:89.47%}.drain18{width:94.74%}.drain19{width:100.0%}
 .toast.bad .ico{color:#ff9d8f}
 .busy{display:flex;align-items:center;gap:12px;padding:20px;border-radius:14px;border:1px dashed var(--line);color:var(--text2)}
 .busy::before{content:"";width:16px;height:16px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:spin .9s linear infinite;flex:none}
@@ -500,6 +502,7 @@ button.set-row:hover:enabled{background:var(--raised)}
   .quick button{width:40px;height:40px;border-radius:11px;background:var(--raised)}
   .fab{display:grid;position:absolute;right:18px;bottom:92px;width:58px;height:58px;border-radius:18px;border:0;background:var(--accent);color:var(--ink);place-items:center;box-shadow:0 10px 26px rgba(0,0,0,.35);z-index:4}
   .fab .ico{width:24px;height:24px}
+  :root[data-ime] .tabbar{display:none}
   .tabbar{display:flex;flex:none;height:72px;padding-bottom:env(safe-area-inset-bottom);background:var(--bg2);border-top:1px solid var(--line2);z-index:6}
   .tabbar button{flex:1;border:0;background:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:12px;color:var(--text3)}
   .tabbar button{transition:color .2s}
@@ -707,6 +710,16 @@ button.set-row:hover:enabled{background:var(--raised)}
 .receipt::before{content:"";position:absolute;inset:0 auto 0 0;width:4px;border-radius:18px 0 0 18px;background:var(--accent)}
 .receipt.warn::before{background:var(--warn)}
 .receipt.bad::before{background:var(--danger)}
+/* Centered on the main pane beside the sidebar (and list), not on the window, kept inside it (owner QA, plan 0062). */
+.shell.nolist~.receipt,.shell.nolist~.toasts{left:min(calc(50% + 112px),calc(100% - 242px))}
+.shell:not(.nolist)~.receipt,.shell:not(.nolist)~.toasts{left:min(calc(50% + 272px),calc(100% - 242px))}
+@container app (max-width: 980px){
+  .shell.nolist~.receipt,.shell.nolist~.toasts{left:min(calc(50% + 32px),calc(100% - 242px))}
+  .shell:not(.nolist)~.receipt,.shell:not(.nolist)~.toasts{left:min(calc(50% + 177px),calc(100% - 242px))}
+}
+@container app (max-width: 640px){
+  .shell.nolist~.receipt,.shell.nolist~.toasts,.shell:not(.nolist)~.receipt,.shell:not(.nolist)~.toasts{left:50%}
+}
 .receipt .r-mark{width:42px;height:42px;flex:none;border-radius:13px;display:grid;place-items:center;background:var(--soft);color:var(--accent);animation:markPop .5s .1s both}
 .receipt.warn .r-mark{background:var(--warn-soft);color:var(--warn)}
 .receipt.bad .r-mark{background:var(--danger-soft);color:var(--danger)}

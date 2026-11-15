@@ -10,7 +10,10 @@
 //! inside each directly attached IPv4 network of the main routing table
 //! (`/proc/net/route`, bounded; plan 0042): a VPN that routes everything else
 //! through its own table would otherwise hide the LAN address behind the
-//! tunnel's. Then fixed probes cover the private IPv4 ranges, shared address
+//! tunnel's. Attached networks on an interface without carrier (an idle
+//! container bridge) are skipped, and those on physical interfaces come
+//! before virtual ones (plan 0062): the other device tries the addresses in
+//! order, waiting for each. Then fixed probes cover the private IPv4 ranges, shared address
 //! space, a documentation address for the default route, and IPv6
 //! unique-local and global routes. Where `/proc/net/route` is unreadable
 //! (Android restricts it), only the fixed probes run. Loopback, link-local (no scope ID fits an endpoint),
@@ -68,12 +71,52 @@ fn filter(found: impl IntoIterator<Item = IpAddr>) -> Vec<IpAddr> {
 /// Largest `/proc/net/route` read; a longer table is truncated.
 const MAX_ROUTE_TABLE: u64 = 64 * 1024;
 
+/// An interface's link, from `/sys/class/net` (plan 0062).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Link {
+    /// Backed by a hardware device.
+    Physical,
+    /// A bridge, tunnel or other virtual interface, or unknown.
+    Virtual,
+    /// Reports no carrier: no other device can reach it.
+    NoCarrier,
+}
+/// A route table interface name that is safe as one path component.
+fn plain_iface(name: &str) -> bool {
+    (1..=15).contains(&name.len())
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'@' | b'-'))
+}
+/// The interface's link state; unreadable state counts as virtual, so the
+/// network is kept (Android and other systems without `/sys/class/net`).
+fn link(iface: &str) -> Link {
+    use std::io::Read;
+    if !plain_iface(iface) {
+        return Link::Virtual;
+    }
+    let dir = std::path::Path::new("/sys/class/net").join(iface);
+    let mut carrier = String::new();
+    if let Ok(file) = std::fs::File::open(dir.join("carrier")) {
+        let _ = file.take(16).read_to_string(&mut carrier);
+    }
+    if carrier.trim() == "0" {
+        Link::NoCarrier
+    } else if dir.join("device").exists() {
+        Link::Physical
+    } else {
+        Link::Virtual
+    }
+}
 /// One probe address inside each directly attached IPv4 network listed in a
 /// `/proc/net/route` table: up, no gateway, a prefix of 1–30 bits, not
-/// loopback. Fields are hex in the kernel's byte order.
-fn attached_probes(table: &str) -> Vec<IpAddr> {
+/// loopback, with carrier; physical interfaces first, then table order.
+/// Fields are hex in the kernel's byte order.
+fn attached_probes(table: &str, link: impl Fn(&str) -> Link) -> Vec<IpAddr> {
     let hex = |f: &str| u32::from_str_radix(f, 16).ok();
-    let mut out = Vec::new();
+    let mut found: Vec<(Link, IpAddr)> = Vec::new();
     for line in table.lines().skip(1) {
         let f: Vec<&str> = line.split_whitespace().collect();
         let (Some(iface), Some(dest), Some(gateway), Some(flags), Some(mask)) = (
@@ -97,11 +140,21 @@ fn attached_probes(table: &str) -> Vec<IpAddr> {
             continue;
         }
         let probe = IpAddr::V4(Ipv4Addr::from((network & mask) | 1));
-        if !out.contains(&probe) && out.len() < MAX_ADDRESSES {
-            out.push(probe);
+        if found.iter().any(|(_, p)| *p == probe) {
+            continue;
+        }
+        let state = link(iface);
+        if state != Link::NoCarrier {
+            found.push((state, probe));
         }
     }
-    out
+    // Stable: table order stays within each kind.
+    found.sort_by_key(|(state, _)| *state);
+    found
+        .into_iter()
+        .map(|(_, probe)| probe)
+        .take(MAX_ADDRESSES)
+        .collect()
 }
 
 fn route_table() -> String {
@@ -116,7 +169,7 @@ fn route_table() -> String {
 /// Up to 8 local unicast addresses, best first (directly attached networks,
 /// then the fixed probes); empty when none is found.
 pub fn local_addresses() -> Vec<IpAddr> {
-    let attached = attached_probes(&route_table());
+    let attached = attached_probes(&route_table(), link);
     filter(
         attached
             .iter()
@@ -171,8 +224,44 @@ mod tests {
         let v4 = |a, b, c, d| IpAddr::V4(Ipv4Addr::new(a, b, c, d));
         // The default route (gateway), a /32 tunnel, loopback, a down route
         // and a non-contiguous mask are skipped; duplicates collapse.
-        assert_eq!(attached_probes(table), vec![v4(192, 168, 15, 1)]);
-        assert!(attached_probes("").is_empty());
+        let up = |_: &str| Link::Physical;
+        assert_eq!(attached_probes(table, up), vec![v4(192, 168, 15, 1)]);
+        assert!(attached_probes("", up).is_empty());
+    }
+
+    #[test]
+    fn net_attached_networks_skip_no_carrier_and_put_physical_first() {
+        // An idle container bridge, a busy one, then the LAN (plan 0062).
+        let table = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+            docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n\
+            br-1\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n\
+            eth0\t0001A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n\
+            ../x\t0000000A\t00000000\t0001\t0\t0\t0\t000000FF\t0\t0\t0\n";
+        let v4 = |a, b, c, d| IpAddr::V4(Ipv4Addr::new(a, b, c, d));
+        let state = |iface: &str| match iface {
+            "docker0" => Link::NoCarrier,
+            "eth0" => Link::Physical,
+            _ => Link::Virtual,
+        };
+        assert_eq!(
+            attached_probes(table, state),
+            vec![v4(192, 168, 1, 1), v4(172, 18, 0, 1), v4(10, 0, 0, 1)]
+        );
+        // Unknown link state keeps every network in table order.
+        let unknown = |_: &str| Link::Virtual;
+        assert_eq!(attached_probes(table, unknown).len(), 4);
+    }
+
+    #[test]
+    fn net_interface_names_are_plain_path_components() {
+        for good in ["eth0", "br-58f4", "wlan0", "vlan.10", "veth@if3"] {
+            assert!(plain_iface(good), "{good}");
+        }
+        for bad in ["", ".", "..", "../x", "a/b", "sixteen-chars-xx", "eth 0"] {
+            assert!(!plain_iface(bad), "{bad}");
+        }
+        // An unsafe name is never looked up, and kept as virtual.
+        assert_eq!(link("../etc"), Link::Virtual);
     }
 
     #[test]

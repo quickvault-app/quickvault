@@ -265,7 +265,9 @@ fn lan_app_cancel_and_lock_end_windows_and_prompts() {
     assert_eq!(a.c.snapshot().phase, Phase::Unlocked);
     assert!(a.c.lan_view(a.epoch()).unwrap().code.is_some());
     let started = Instant::now();
-    a.c.lan_cancel(a.epoch());
+    // Escape (Android Back) cancels it as Cancel does, even while the window
+    // runs as an operation (plan 0062).
+    assert!(a.c.lan_escape(a.epoch()));
     a.wait();
     assert!(started.elapsed() < Duration::from_secs(3));
     let done = until(&a, "the cancelled outcome", |v| v.done.clone());
@@ -274,7 +276,10 @@ fn lan_app_cancel_and_lock_end_windows_and_prompts() {
         a.c.lan_view(a.epoch()).unwrap().code.is_none(),
         "the code is gone"
     );
-    a.c.lan_dismiss(a.epoch());
+    // Escape then closes the receipt; with nothing left it is not used.
+    assert!(a.c.lan_escape(a.epoch()));
+    assert!(a.c.lan_view(a.epoch()).is_none());
+    assert!(!a.c.lan_escape(a.epoch()));
     // A lock ends a waiting window and drops its state.
     a.c.act(a.epoch(), WsAction::LanOffer);
     until(&a, "the window", |v| {

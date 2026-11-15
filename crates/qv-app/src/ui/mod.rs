@@ -245,6 +245,11 @@ fn Root(controller: Controller, revision: u64) -> Element {
                 event.prevent_default();
                 return;
             }
+            // The LAN window or receipt first, even while its operation runs.
+            if key == "Escape" && c.lan_escape(epoch) {
+                event.prevent_default();
+                return;
+            }
             let handled = Shortcut::from_key(&key, ctrl)
                 .is_some_and(|s| s != Shortcut::Search && c.shortcut(epoch, s));
             if handled {

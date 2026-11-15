@@ -1005,6 +1005,20 @@ Dates are ISO 8601. Newest first within each section.
 
 ### Fixed
 
+- 2026-11-15: Phone and sync polish from owner QA (plan 0062): Android Back
+  now cancels the sync code window (it used to ask to close the app); once
+  the other device connects, the code window says "Connected to another
+  device" without its countdown; "Resolve now" closes the sync receipt; the
+  phone tab bar hides while the keyboard is open; the per-snapshot delete
+  button is red; the "Copied" bar drains smoothly. Sync codes no longer list
+  addresses of interfaces without carrier (such as idle container bridges)
+  and list physical interfaces first, so the scanning device stops waiting
+  on addresses it cannot reach before the right one.
+- 2026-11-15: The conflict comparison counts a renamed field, a changed field
+  type or hidden setting, and reordered fields as differences, so "Nothing
+  you can see differs" is true; versions with the same content each get
+  their own Keep button instead of a single "Keep it" (owner QA, plan 0062).
+  The sync receipt and toasts are centered on the main pane on desktop.
 - 2026-11-15: The media player's volume slider shows 0 while muted and
   returns to the previous volume on unmute (owner report).
   Known limit on Linux: without a PulseAudio server (`pipewire-pulse`),

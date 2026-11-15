@@ -323,6 +323,7 @@ pub(crate) fn LanPanel(
     }
     let title = match v.kind {
         LanKind::Window if v.code.is_some() => "Scan or type this code on the other device",
+        LanKind::Window if v.admitted => "Connected to another device",
         LanKind::Window => "Connecting with another device",
         LanKind::Sync => "Syncing with another device",
         LanKind::Join => "Joining from another device",
@@ -372,7 +373,9 @@ pub(crate) fn LanPanel(
                     p { class: "center hint", "This device's address:" }
                     div { class: "center mono", for e in v.endpoints.iter() { div { "{e}" } } }
                 }
-                if v.seconds > 0 { p { class: "center hint", "Closes in {v.seconds / 60}:{v.seconds % 60:02}" } }
+                // Once the other device is admitted, the countdown no longer
+                // means "use the code" (plan 0062); the deadline still applies.
+                if v.seconds > 0 && !v.admitted { p { class: "center hint", "Closes in {v.seconds / 60}:{v.seconds % 60:02}" } }
                 if let (Some(sas), true) = (v.sas.as_ref(), v.question.is_none() && v.done.is_none()) {
                     div { role: "status", "aria-label": "Comparison code",
                         p { class: "center", "Check that the other device shows this code:" }
@@ -566,11 +569,13 @@ fn receipt(
                 })
                 .and_then(Result::ok)
                 .flatten();
+            // Close the receipt first: navigating starts a new epoch, after
+            // which the dismissal would be stale (plan 0062).
+            c.lan_dismiss(epoch);
             c.navigate(
                 epoch,
                 only.map_or(Screen::Conflicts, Screen::ConflictRecord),
             );
-            c.lan_dismiss(epoch);
         }
     };
     // The countdown ring: a 2π·9 ≈ 56.5 circumference, emptied over 6 s.
@@ -836,7 +841,7 @@ fn ConflictRecord(
     rsx! {
         Head { controller: controller.clone(), epoch, title: "Compare versions", lead, nested: true }
         if identical {
-            div { class: "banner ok", Svg { icon: Icon::Check } span { "Nothing you can see differs. The versions differ only in internal details, such as when they were saved." } }
+            div { class: "banner ok", Svg { icon: Icon::Check } span { "Nothing you can see differs: the versions were saved at different times with the same content." } }
         }
         if view.needs_password {
             Input { controller: controller.clone(), epoch, field: WsField::Password, label: "The chosen password slot's master password", kind: Kind::Secret, value: None, disabled: false }
@@ -884,13 +889,12 @@ fn ConflictRecord(
             }
         }
         div { class: "cmp-bar", role: "group", "aria-label": "Choose a version",
-            span { class: "hint", if identical { "Keep one to end the conflict." } else { "The version you keep becomes the item." } }
+            span { class: "hint", if identical { "They look the same, so keep either to end the conflict." } else { "The version you keep becomes the item." } }
+            // Every version stays choosable, identical ones too (plan 0062).
             for (i, h) in view.heads.iter().enumerate() {
-                if !identical || i == 0 {
-                    button { class: if i == 0 { "btn primary" } else { "btn" }, id: "keep-{h.label.to_ascii_lowercase()}",
-                        onclick: act(&controller, epoch, WsAction::Resolve(record.clone(), h.version.clone())),
-                        if identical { "Keep it" } else { span { class: "keep", b { "Keep {h.label}" } small { "{h.modified}" } } }
-                    }
+                button { class: if i == 0 { "btn primary" } else { "btn" }, id: "keep-{h.label.to_ascii_lowercase()}",
+                    onclick: act(&controller, epoch, WsAction::Resolve(record.clone(), h.version.clone())),
+                    span { class: "keep", b { "Keep {h.label}" } small { "{h.modified}" } }
                 }
             }
         }
@@ -980,7 +984,7 @@ fn Snapshots(controller: Controller, epoch: FormEpoch, revision: u64) -> Element
                     span { class: "si", Svg { icon: Icon::Clock } }
                     span { class: "l", b { "{r.created}" } span { "{r.kind} · keeps {super::items::human_size(r.size)} · {r.id}" } }
                     button { class: "btn", onclick: restore(r.id.clone()), Svg { icon: Icon::Restore } "Restore…" }
-                    button { class: "icon-btn", "aria-label": "Delete snapshot", title: "Delete", onclick: act(&controller, epoch, WsAction::DeleteSnapshot(r.id.clone())), Svg { icon: Icon::Trash } }
+                    button { class: "icon-btn danger", "aria-label": "Delete snapshot", title: "Delete", onclick: act(&controller, epoch, WsAction::DeleteSnapshot(r.id.clone())), Svg { icon: Icon::Trash } }
                 }
             }
         }

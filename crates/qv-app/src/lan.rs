@@ -368,6 +368,8 @@ pub struct LanView {
     pub done: Option<LanDone>,
     /// Seconds before a clean receipt closes, while it would.
     pub closes_in: Option<u64>,
+    /// The window admitted the other device (its code is gone).
+    pub admitted: bool,
 }
 
 /// While a round receives more than 256 MiB, its size and progress (0009
@@ -953,7 +955,29 @@ impl Controller {
             question_id: run.question_id,
             done: run.done.clone(),
             closes_in: run.done.as_ref().and_then(LanDone::closes_in),
+            admitted: run.admitted,
         })
+    }
+
+    /// Escape and Android Back (plan 0062): cancel a running LAN operation,
+    /// as its Cancel button does, or close its receipt. Whether there was one.
+    pub fn lan_escape(&self, epoch: FormEpoch) -> bool {
+        let running = {
+            let s = self.state();
+            if s.epoch != epoch.0 {
+                return false;
+            }
+            match s.lan.as_ref() {
+                None => return false,
+                Some(run) => run.running(),
+            }
+        };
+        if running {
+            self.lan_cancel(epoch);
+        } else {
+            self.lan_dismiss(epoch);
+        }
+        true
     }
 
     /// Answers the current yes/no question. Works while the worker waits for

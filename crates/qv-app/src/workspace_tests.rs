@@ -2174,3 +2174,154 @@ fn quick_unlock_is_offered_after_a_password_unlock_and_prompts_on_return_only() 
     page(&env);
     assert_eq!(env.c.quick_policy(), None);
 }
+
+/// A conflict on the entry "Twice" (plan 0062): a copy of this vault (the
+/// other device) runs `remote`, this one runs `local`, then this one merges
+/// the copy's export. Returns the entry and the conflicted record.
+fn two_device_conflict(
+    env: &Env,
+    remote: impl Fn(&qv_core::Session, qv_core::EntryHandle),
+    local: impl Fn(&Env, qv_core::EntryHandle),
+) -> (qv_core::EntryHandle, String) {
+    env.add_entry("Twice", SECRET);
+    env.read(|s| {
+        let copy = s.begin_destructive(false, None)?;
+        s.finish_destructive(copy)
+    });
+    env.c.lock();
+    env.unlock(PASSWORD);
+    let (snaps, _) = env.read(views::snapshots);
+    let branch = env.dir.join("vaults/branch.qvault");
+    env.c.navigate(env.epoch(), Screen::Snapshots);
+    env.put(WsField::Path, branch.to_str().unwrap());
+    env.act(WsAction::RestoreSnapshot(snaps[0].id.clone()));
+    assert_eq!(env.error(), None);
+    let exports = env.dir.join("exports");
+    private_dir(&exports).unwrap();
+    let find = |s: &qv_core::Session| match s.search("Twice").unwrap().remove(0) {
+        qv_core::SearchHit::Entry(x) => x.handle,
+        _ => panic!(),
+    };
+    let file = {
+        let core = env.c.core().unwrap();
+        let other = core
+            .unlock(
+                &branch,
+                &qv_core::MasterPassword::from_utf8(PASSWORD.as_bytes()).unwrap(),
+                None,
+            )
+            .unwrap();
+        remote(&other, find(&other));
+        let r = other.export_archive(&exports, false, None).unwrap();
+        other.lock();
+        exports.join(format!("{}.qvsnap", r.archive_id))
+    };
+    // Handles do not outlive the lock above.
+    let e = env.read(|s| Ok::<_, qv_core::CoreError>(find(s)));
+    local(env, e);
+    env.c.navigate(env.epoch(), Screen::Archives);
+    env.put(WsField::Path, file.to_str().unwrap());
+    env.act(WsAction::MergeArchive);
+    let rows = env.read(views::conflicts);
+    let row = rows
+        .iter()
+        .find(|r| r.kind == "Entry")
+        .expect("both devices made versions");
+    (e, row.record.clone())
+}
+
+// Owner QA (plan 0062): an entry changed and changed back on two devices
+// conflicts with identical content. The comparison says so, every version
+// can be kept, and keeping one resolves the conflict.
+#[test]
+fn identical_conflict_versions_compare_and_resolve() {
+    let _k = KDF.lock().unwrap_or_else(|p| p.into_inner());
+    let env = Env::unlocked();
+    let (e, record) = two_device_conflict(
+        &env,
+        |s, e| {
+            for title in ["Twice for now", "Twice"] {
+                let mut d = s.edit_entry(e).unwrap();
+                d.entry_mut().title = qv_core::Text::new(title).unwrap();
+                s.save_entry(d).unwrap();
+            }
+        },
+        |env, e| {
+            for title in ["Twice, briefly", "Twice"] {
+                env.act(WsAction::EditEntry(e));
+                assert_eq!(env.error(), None, "edit {title}");
+                env.put(WsField::Title, title);
+                env.act(WsAction::SaveEntry);
+                assert_eq!(env.error(), None, "save {title}");
+            }
+        },
+    );
+    let cmp = env.read(|s| views::conflict_compare(s, &record));
+    assert!(cmp.identical());
+    assert_eq!(cmp.heads.len(), 2);
+    env.c
+        .navigate(env.epoch(), Screen::ConflictRecord(record.clone()));
+    // The second version, which the screen used to hide.
+    env.act(WsAction::Resolve(
+        record.clone(),
+        cmp.heads[1].version.clone(),
+    ));
+    assert_eq!(env.error(), None);
+    assert_eq!(
+        env.c.pending(env.epoch()),
+        Some(ConfirmKind::Resolve(false))
+    );
+    env.act(WsAction::Answer(true));
+    assert!(
+        matches!(env.report(), Some(Report::Resolved { .. })),
+        "{:?}",
+        env.error()
+    );
+    assert_eq!(env.read(|s| views::entry(s, e)).versions, 1);
+}
+
+// Plan 0062: a renamed field with an equal value is a visible difference,
+// so the comparison does not call the versions identical.
+#[test]
+fn conflict_compare_shows_a_renamed_field() {
+    let _k = KDF.lock().unwrap_or_else(|p| p.into_inner());
+    let env = Env::unlocked();
+    let (_, record) = two_device_conflict(
+        &env,
+        |s, e| {
+            let mut d = s.edit_entry(e).unwrap();
+            let f = d
+                .entry_mut()
+                .fields
+                .iter_mut()
+                .find(|f| crate::editor::same_slot(f.name.expose(), "username"))
+                .unwrap();
+            f.name = qv_core::Text::new("Account").unwrap();
+            s.save_entry(d).unwrap();
+        },
+        |env, e| {
+            env.act(WsAction::EditEntry(e));
+            env.put(WsField::Title, "Twice");
+            env.act(WsAction::SaveEntry);
+            assert_eq!(env.error(), None);
+        },
+    );
+    let cmp = env.read(|s| views::conflict_compare(s, &record));
+    assert!(!cmp.identical());
+    let renamed = cmp
+        .rows
+        .iter()
+        .find(|r| r.label.ends_with(" · name"))
+        .unwrap();
+    assert!(!renamed.same);
+    let mut names: Vec<String> = renamed
+        .cells
+        .iter()
+        .map(|c| match c {
+            views::Cell::Text(t) => t.to_string(),
+            _ => String::new(),
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names[0], "Account");
+}

@@ -22,6 +22,9 @@ use zeroize::{Zeroize, Zeroizing};
 pub const REVEAL_FOR: Duration = Duration::from_secs(30);
 /// Clipboard holds expire after this long when still owned (0008 §3).
 pub const CLIPBOARD_FOR: Duration = Duration::from_secs(20);
+// The toast's countdown bar has one CSS width class per second (`.drain0`–
+// `.drain19` in app.css, plan 0062).
+const _: () = assert!(CLIPBOARD_FOR.as_secs() == 20);
 /// Inactivity limit while a recovery phrase is displayed (plan 0031 decision 5).
 pub const PHRASE_IDLE: Duration = Duration::from_secs(300);
 /// Inactivity limit while a system file picker is open (0009 §1.8).

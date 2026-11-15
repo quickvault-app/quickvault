@@ -764,7 +764,7 @@ pub fn conflict_compare(s: &Session, record: &str) -> Result<CompareView, CoreEr
     let mut heads = Vec::new();
     // Per version: labelled texts, then fields as (id, name, text or the
     // protected handle).
-    type FieldCell = (FieldId, Z, Result<Z, FieldHandle>);
+    type FieldCell = (FieldId, Z, Z, Result<Z, FieldHandle>);
     let mut texts: Vec<Vec<(&'static str, Z)>> = Vec::new();
     let mut fields: Vec<Vec<FieldCell>> = Vec::new();
     let mut needs_password = false;
@@ -812,7 +812,13 @@ pub fn conflict_compare(s: &Session, record: &str) -> Result<CompareView, CoreEr
                         (Some(v), false) => Ok(z(&String::from_utf8_lossy(v.expose_secret()))),
                         _ => Err(d.handle),
                     };
-                    f.push((d.handle.field_id(), z(d.name.expose()), value));
+                    // Its type and hidden setting are visible too (plan 0062).
+                    let shape = if d.protected {
+                        format!("{} · hidden", kind_name(d.kind))
+                    } else {
+                        kind_name(d.kind).to_owned()
+                    };
+                    f.push((d.handle.field_id(), z(d.name.expose()), z(&shape), value));
                 }
             }
             _ => {
@@ -873,7 +879,7 @@ pub fn conflict_compare(s: &Session, record: &str) -> Result<CompareView, CoreEr
     // Fields by stable field ID, in first-seen order.
     let mut ids: Vec<(FieldId, Z)> = Vec::new();
     for f in &fields {
-        for (id, name, _) in f {
+        for (id, name, _, _) in f {
             if !ids.iter().any(|(i, _)| i == id) {
                 ids.push((*id, name.clone()));
             }
@@ -883,16 +889,16 @@ pub fn conflict_compare(s: &Session, record: &str) -> Result<CompareView, CoreEr
         let mut cells = Vec::new();
         let mut secrets = Vec::new();
         for f in &fields {
-            match f.iter().find(|(i, _, _)| *i == id) {
+            match f.iter().find(|(i, _, _, _)| *i == id) {
                 None => {
                     cells.push(Cell::Missing);
                     secrets.push(None);
                 }
-                Some((_, _, Ok(v))) => {
+                Some((_, _, _, Ok(v))) => {
                     cells.push(Cell::Text(v.clone()));
                     secrets.push(None);
                 }
-                Some((_, _, Err(h))) => {
+                Some((_, _, _, Err(h))) => {
                     cells.push(Cell::Masked(id));
                     secrets.push(Some(s.reveal(*h)?));
                 }
@@ -905,10 +911,56 @@ pub fn conflict_compare(s: &Session, record: &str) -> Result<CompareView, CoreEr
                 (None, None) => true,
                 _ => false,
             });
+        // A renamed field, or one whose type or hidden setting changed, is a
+        // visible difference even with an equal value (plan 0062).
+        for (part, pick) in [("name", 1usize), ("type", 2)] {
+            let shown: Vec<Cell> = fields
+                .iter()
+                .map(|f| {
+                    f.iter()
+                        .find(|(i, _, _, _)| *i == id)
+                        .map_or(Cell::Missing, |(_, n, k, _)| {
+                            Cell::Text(if pick == 1 { n.clone() } else { k.clone() })
+                        })
+                })
+                .collect();
+            let present: Vec<&Cell> = shown.iter().filter(|c| **c != Cell::Missing).collect();
+            if present.windows(2).any(|w| w[0] != w[1]) {
+                rows.push(CompareRow {
+                    label: z(&format!("{} · {part}", name.as_str())),
+                    same: false,
+                    cells: shown,
+                });
+            }
+        }
         rows.push(CompareRow {
             label: name,
             same,
             cells,
+        });
+    }
+    // Reordered fields are a visible difference too (plan 0062).
+    let orders: Vec<Vec<FieldId>> = fields
+        .iter()
+        .map(|f| f.iter().map(|(i, _, _, _)| *i).collect())
+        .collect();
+    let shared = |a: &Vec<FieldId>, b: &Vec<FieldId>| -> bool {
+        let keep = |x: &Vec<FieldId>, y: &Vec<FieldId>| -> Vec<FieldId> {
+            x.iter().filter(|i| y.contains(i)).copied().collect()
+        };
+        keep(a, b) == keep(b, a)
+    };
+    if orders.windows(2).any(|w| !shared(&w[0], &w[1])) {
+        rows.push(CompareRow {
+            label: z("Field order"),
+            same: false,
+            cells: fields
+                .iter()
+                .map(|f| {
+                    let names: Vec<&str> = f.iter().map(|(_, n, _, _)| n.as_str()).collect();
+                    Cell::Text(z(&names.join(", ")))
+                })
+                .collect(),
         });
     }
     let name = texts
