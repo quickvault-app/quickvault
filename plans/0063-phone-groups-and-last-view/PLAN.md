@@ -163,3 +163,8 @@ chips; the last group per vault, encrypted per-device note).
   row menu now follows `RowCopy` too: username/password for a standard
   login, password for a standard Wi-Fi, the quoted field list for a menu
   layout, and no copy items without fields.
+- 2026-11-15: owner: hiding a login's username lost its copy button (and could
+  make it the "password"). Standard login and Wi-Fi fields are now matched by
+  name (Username, Password), whatever their hidden setting, in `row_copy` and
+  `quick_fields`; test extended. A row with no visible field showed the
+  plural sidebar label ("Logins"); it now shows the singular type ("Login").

@@ -102,3 +102,4 @@ plan, or a new plan that names the one it supersedes.
 | [0061](0061-audio-levels/PLAN.md) | Audio preview bars: rest until Play, follow the sound on Android (owner request) | Implemented — full gates, phone check and fresh-context review pending; native levels proposed |
 | [0062](0062-phone-and-sync-polish/PLAN.md) | Phone and sync polish: Back closes the sync window, connected state, receipt after Resolve, keyboard and tab bar, red snapshot delete, smooth copy bar, LAN address order (owner QA) | Implemented — phone check and fresh-context review pending |
 | [0063](0063-phone-groups-and-last-view/PLAN.md) | Groups on the phone; the last group per vault, sealed per device (owner request) | Implemented — phone check and fresh-context review (crypto) pending |
+| [0064](0064-format-freeze/PLAN.md) | Format freeze for 1.0: release format numbers, format registry, golden vectors, phone KDF benchmark (plan 0056 step 7) | Proposed |

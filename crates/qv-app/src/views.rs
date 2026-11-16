@@ -134,19 +134,18 @@ fn row_copy(kind: &str, fields: &[qv_core::CopyField]) -> RowCopy {
                 .any(|x| same_slot(f.name.expose(), x.name))
         })
     };
-    let secret = fields.iter().any(|f| f.protected);
+    // Standard fields by name, whatever their hidden setting (plan 0063).
+    let named = |slot: &str| fields.iter().any(|f| same_slot(f.name.expose(), slot));
     match kind {
         "login" if standard(ItemType::Login) => {
-            let user = fields
-                .iter()
-                .any(|f| !f.protected && f.kind != FieldKind::Url);
+            let (user, secret) = (named("Username"), named("Password"));
             if user || secret {
                 RowCopy::Pair { user, secret }
             } else {
                 RowCopy::Menu
             }
         }
-        "wifi" if standard(ItemType::Wifi) && secret => RowCopy::Secret,
+        "wifi" if standard(ItemType::Wifi) && named("Password") => RowCopy::Secret,
         _ => RowCopy::Menu,
     }
 }
@@ -370,18 +369,29 @@ pub fn quick_fields(
     if v.versions > 1 {
         return Ok((None, None));
     }
+    // By name first (plan 0063): hiding the username must neither lose its
+    // button nor make it the "password".
+    let named = |slot: &str| {
+        v.fields
+            .iter()
+            .find(|f| f.kind != FieldKind::Totp && crate::editor::same_slot(&f.name, slot))
+    };
     let plain = |f: &&FieldRow| !f.protected && f.kind != FieldKind::Totp;
-    let user = v
-        .fields
-        .iter()
-        .filter(plain)
-        .find(|f| f.kind != FieldKind::Url)
+    let user = named("Username")
+        .or_else(|| {
+            v.fields
+                .iter()
+                .filter(plain)
+                .find(|f| f.kind != FieldKind::Url)
+        })
         .or_else(|| v.fields.iter().find(plain))
         .map(|f| f.handle);
-    let secret = v
-        .fields
-        .iter()
-        .find(|f| f.protected && f.kind != FieldKind::Totp)
+    let secret = named("Password")
+        .or_else(|| {
+            v.fields
+                .iter()
+                .find(|f| f.protected && f.kind != FieldKind::Totp)
+        })
         .map(|f| f.handle);
     Ok((user, secret))
 }
@@ -1613,6 +1623,15 @@ mod row_copy_tests {
             }
         );
         // A custom field makes it a layout of its own.
+        // A hidden username keeps both buttons.
+        let hidden = [f("Username", Plain, true), f("Password", Secret, true)];
+        assert_eq!(
+            row_copy("login", &hidden),
+            RowCopy::Pair {
+                user: true,
+                secret: true
+            }
+        );
         let custom = [
             f("Username", Plain, false),
             f("Password", Secret, true),

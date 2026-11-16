@@ -697,7 +697,8 @@ pub(crate) fn ListPane(
                                 span { class: "tile {item_hue(row.colour, &id)}", {entry_glyph(row.kind, &row.title)} }
                             }
                             span { class: "t", b { class: "row-title", "{row.title.as_str()}" }
-                                span { if row.subtitle.is_empty() { "{kind_label(row.kind)}" } else { "{row.subtitle.as_str()}" } }
+                                // Nothing visible to show: the item's type, singular (plan 0063).
+                                span { if row.subtitle.is_empty() { "{type_name(row.kind)}" } else { "{row.subtitle.as_str()}" } }
                             }
                             if row.conflict { span { class: "cbadge", "conflict" } }
                             // What the row copies follows its fields (plan
@@ -1636,5 +1637,16 @@ fn SaveAttachment(
     }
     rsx! {
         button { class: "btn", disabled, onclick: act(&controller, epoch, WsAction::SaveAttachment(handle)), "Save…" }
+    }
+}
+
+/// An item type's singular name, for a row with no visible field (plan 0063).
+fn type_name(bucket: &str) -> &'static str {
+    match bucket {
+        "login" => "Login",
+        "card" => "Card",
+        "wifi" => "Wi-Fi",
+        "note" => "Note",
+        _ => "Other",
     }
 }
