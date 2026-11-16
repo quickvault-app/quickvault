@@ -35,6 +35,9 @@ Whenever a new WebKitGTK bug, workaround or limit is found, add an entry here
   other formats as a whole in-memory blob. Non-MP4 Linux previews are capped
   at 256 MiB (`PreviewTooLarge`). The CSP adds `blob:` to media-src and the
   listener origin to connect-src.
+  The fetch must send the explicit app origin (`dioxus://index.html`); an
+  opaque `null` origin receives no CORS grant. Rechecked with WebKitGTK in
+  plan 0065; do not broaden that grant to every opaque document.
 - **Code:** `assets/player.js` (header, `loadBlob`, the MP4 fragmenter),
   the Linux branches in `src/ui/items.rs`, the bound in `src/preview.rs`.
 - **Docs:** 0003 §6.4, 0009 §1.8; plans 0057, 0059.
@@ -43,6 +46,7 @@ Whenever a new WebKitGTK bug, workaround or limit is found, add an entry here
   (sample its descriptors, as the check does), Linux can use `src` like
   Windows and Android. The memory playback, the MP4 fragmenter and the
   256 MiB bound can then go. W2–W5 exist only because of this path.
+  Recheck custom-scheme Origin serialization and actual memory playback too.
 
 ### W2. Blob playback of MP4
 

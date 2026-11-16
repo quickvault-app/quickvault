@@ -401,8 +401,15 @@ impl Keystore for AndroidKeystore {
         let Some(current) = slot.as_mut().filter(|s| s.serial == serial) else {
             return Err(PlatformError::Cancelled);
         };
+        // A successful prompt whose result is cancelled before delivery is
+        // also a dismissal, not a failed authentication (0002 §5.4).
+        if result.is_ok() && cancel() {
+            current.failures -= 1;
+            let _ = self.persist(current);
+            return Err(PlatformError::Cancelled);
+        }
         match result {
-            Ok(plain) if !plain.is_empty() && plain.len() <= MAX_PLAINTEXT && !cancel() => {
+            Ok(plain) if !plain.is_empty() && plain.len() <= MAX_PLAINTEXT => {
                 current.failures -= 1;
                 // The attempt stays recorded if this save fails; still open.
                 let _ = self.persist(current);
@@ -538,6 +545,37 @@ mod tests {
         assert!(os.binding().is_none());
         assert!(os.wrap(&bytes()).is_err());
         assert!(os.unwrap(&bytes()).is_err());
+    }
+
+    // 0012 §1: Hardware assumptions
+    #[test]
+    fn quick_success_cancelled_before_delivery_never_spends_attempts() {
+        let backend = Arc::new(Backend {
+            fail: AtomicBool::new(false),
+            unavailable: AtomicBool::new(false),
+            deletes: AtomicUsize::new(0),
+        });
+        let os = AndroidKeystore::new(backend.clone());
+        os.enroll(binding(), QuickPolicy::Class3, &bytes(), cancel())
+            .unwrap();
+        for _ in 0..4 {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let cancelled: Cancellation =
+                Arc::new(move || calls.fetch_add(1, Ordering::SeqCst) > 0);
+            assert_eq!(
+                os.unlock_bound(binding(), cancelled).err(),
+                Some(PlatformError::Cancelled)
+            );
+            assert_eq!(os.slot.lock().unwrap().as_ref().unwrap().failures, 0);
+            assert!(os.binding() == Some(binding()));
+        }
+        assert_eq!(backend.deletes.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            os.unlock_bound(binding(), cancel())
+                .unwrap()
+                .expose_secret(),
+            b"test"
+        );
     }
 
     /// Blocks `open` until released, so concurrent policy calls can be observed.

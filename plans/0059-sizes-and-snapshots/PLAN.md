@@ -2,7 +2,7 @@
 
 | Status | Created | Approved | Specs |
 |--------|---------|----------|-------|
-| Implemented — Android build, phone and Windows checks, fresh-context review pending | 2026-11-15 | 2026-11-15 (owner request; numbers and design details delegated by the owner, standing 2026-11-02) | 0003 §6.3, 0004 §1.2 §2 §3.6 §4.1–4.3, 0007 §2.2 §3, 0009 §1.8, 0011 §4, 0013 §7.4 (amended) |
+| Reviewed 2026-11-16 (see REVIEW.md) — Android build, phone and Windows checks pending | 2026-11-15 | 2026-11-15 (owner request; numbers and design details delegated by the owner, standing 2026-11-02) | 0003 §6.3, 0004 §1.2 §2 §3.6 §4.1–4.3, 0007 §2.2 §3, 0009 §1.8, 0011 §4, 0013 §7.4 (amended) |
 
 ## Intent
 

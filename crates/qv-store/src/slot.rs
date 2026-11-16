@@ -7,8 +7,8 @@
 //! defined-field projection of the password-keyslot record. Other types
 //! (quick unlock, phase 2.6) are [`StoreError::Unsupported`]. Unknown
 //! descriptor keys in existing rows are preserved; the header MAC covers them.
-//! Newly written slots use the public projection, omitting encrypted extensions. Version 1 of
-//! the development format requires exactly one password slot.
+//! Newly written slots use the public projection, omitting encrypted extensions. The 1.0
+//! format requires exactly one password slot.
 
 use qv_crypto::{PasswordSlot, SlotId};
 use qv_model::{Keyslot, RandomId};

@@ -10,7 +10,7 @@
 //! local head names the blob's digest (key 9), so the index cannot be swapped
 //! for an older one without the head.
 //!
-//! Development wire format (volatile until the pre-1.0 freeze):
+//! Wire format (frozen at 1.0, spec 0015 §4.8):
 //!
 //! ```text
 //! row    = [1, data_profile uint, nonce bstr 24, ciphertext bstr]

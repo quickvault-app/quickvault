@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 qv-crypto.workspace = true
+qv-encoding.workspace = true
 qv-model.workspace = true
 qv-store.workspace = true
 qv-sync.workspace = true
@@ -20,7 +21,6 @@ zxcvbn.workspace = true
 [dev-dependencies]
 qv-crypto = { workspace = true, features = ["test-kdf-limit"] }
 proptest.workspace = true
-qv-encoding.workspace = true
 
 [features]
 test-kdf-limit = ["qv-crypto/test-kdf-limit"]

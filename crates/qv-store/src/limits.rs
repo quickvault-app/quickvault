@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Vault-file budgets (spec 0004 §4.1). Development values where the spec
-//! gives none; the 1.16 format freeze records the final ones.
+//! Vault-file budgets (spec 0004 §4.1), frozen at 1.0 (spec 0015 §1.5).
 
 use crate::object::ENVELOPE_OVERHEAD;
 
 /// Largest vault file accepted before SQLite parses it: the 8 GiB
 /// referenced-ciphertext budget plus room for history, snapshot-only
-/// objects and retained manifests (plan 0059). Development value.
+/// objects and retained manifests (plan 0059).
 pub const MAX_DB_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 /// The only accepted SQLite page size.
@@ -50,11 +49,11 @@ pub const MAX_CLOCK_COMPONENTS: usize = 1 << 20;
 pub const MAX_CHUNKS: usize = (qv_model::MAX_ATTACHMENT_BYTES / qv_model::CHUNK_SIZE) as usize;
 
 /// Largest object frame of an archive: one record or chunk envelope at its
-/// ciphertext budget (0004 §4.1, §6.1). Development value.
+/// ciphertext budget (0004 §4.1, §6.1).
 pub const MAX_ARCHIVE_OBJECT_FRAME: usize = MAX_RECORD_CIPHERTEXT + ENVELOPE_OVERHEAD;
 
 /// Largest manifest frame of an archive: a manifest envelope at the manifest
-/// ciphertext budget (0004 §4.1, §6.3). Development value.
+/// ciphertext budget (0004 §4.1, §6.3).
 pub const MAX_ARCHIVE_MANIFEST_FRAME: usize = MAX_MANIFEST_CIPHERTEXT + ENVELOPE_OVERHEAD;
 
 /// Largest sum of referenced ciphertext lengths one archive may claim: the

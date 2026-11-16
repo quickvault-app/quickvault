@@ -2,7 +2,7 @@
 
 | Status | Created | Approved | Specs |
 |--------|---------|----------|-------|
-| Implemented | 2026-11-15 | 2026-11-15 (owner: "You can go ahead and do it") | 0004 §1.4 (new), §4.1; 0007 §3.3; 0009 §1.8; 0011 §4; 0012 §1 |
+| Reviewed 2026-11-16 (see REVIEW.md) | 2026-11-15 | 2026-11-15 (owner: "You can go ahead and do it") | 0004 §1.4 (new), §4.1; 0007 §3.3; 0009 §1.8; 0011 §4; 0012 §1 |
 
 ## Intent
 

@@ -526,29 +526,19 @@ impl VaultFile {
         self.lock.same_as_path(&self.path)
     }
 
-    /// Moves this file, a verified compaction copy, over `to` and follows it
-    /// (0004 §1.4): SQLite's handle is closed around the move, which Windows
-    /// requires, and the connection reopened at whichever name the file has.
+    /// Close SQLite's handle for Windows replacement while retaining the
+    /// source's process lock. Our own handles already share delete.
     #[cfg(windows)]
-    pub(crate) fn replace_onto(&mut self, to: &Path) -> Result<(), StoreError> {
-        self.lock.same_as_path(&self.path)?;
+    pub(crate) fn close_connection(&mut self) -> Result<(), StoreError> {
         let placeholder = Connection::open_in_memory().map_err(|e| crate::error::sqlite_err(&e))?;
         let old = std::mem::replace(&mut self.conn, placeholder);
-        old.close().map_err(|(_, e)| crate::error::sqlite_err(&e))?;
-        let moved = fs::replace_vault(&self.path, to);
-        if moved.is_ok() {
-            self.path = to.to_owned();
-        }
-        self.reopen()?;
-        moved?;
-        fs::sync_dir(fs::parent_of(to))?;
-        self.lock.same_as_path(&self.path)
+        old.close().map_err(|(_, e)| crate::error::sqlite_err(&e))
     }
 
     /// Reopens the hardened connection at `self.path` under the retained
     /// lock and requires the same header, MAC and slots as before.
     #[cfg(windows)]
-    fn reopen(&mut self) -> Result<(), StoreError> {
+    pub(crate) fn reopen(&mut self) -> Result<(), StoreError> {
         fs::check_sidecars(&self.path)?;
         self.lock.same_as_path(&self.path)?;
         let mut conn = open_connection(&self.path)?;

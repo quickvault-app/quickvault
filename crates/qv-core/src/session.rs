@@ -440,13 +440,17 @@ impl Session {
             let result = f(ctx);
             crate::snapshot::after_mutation(ctx.open);
             if result.is_ok() {
-                crate::snapshot::auto_compact(ctx.open);
+                let c = ctx.canceller();
+                crate::snapshot::auto_compact(ctx.open, &|| c.check().is_err());
             }
             result
         })
     }
 
-    fn run<T>(&self, f: impl FnOnce(&mut Ctx<'_>) -> Result<T, CoreError>) -> Result<T, CoreError> {
+    pub(crate) fn run<T>(
+        &self,
+        f: impl FnOnce(&mut Ctx<'_>) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
         if self.locking.load(Ordering::SeqCst) {
             return Err(CoreError::SessionLocked);
         }
@@ -482,16 +486,52 @@ impl Session {
         self.tag
     }
 
-    /// Takes the open state out and locks the session: every later call is
+    /// Runs `f` and, when it succeeds, takes the open state out under the
+    /// same guard and locks the session: every later call is
     /// [`CoreError::SessionLocked`] and handles are stale. Rotation consumes
-    /// the unlocked vault this way (plan 0023).
-    pub(crate) fn take_open(&self) -> Result<Open, CoreError> {
+    /// the unlocked vault this way (plan 0023), so no other call can commit
+    /// between its recovery copy and the state it rotates (plan 0050 review
+    /// finding 2). An error, or a lock requested meanwhile
+    /// ([`CoreError::Cancelled`]), leaves the state in place unless `f`
+    /// poisoned it.
+    pub(crate) fn take_open_after<T>(
+        &self,
+        f: impl FnOnce(&mut Ctx<'_>) -> Result<T, CoreError>,
+    ) -> Result<(T, Open), CoreError> {
         if self.locking.load(Ordering::SeqCst) {
             return Err(CoreError::SessionLocked);
         }
-        let mut guard = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        self.locking.store(true, Ordering::SeqCst);
-        guard.take().ok_or(CoreError::SessionLocked)
+        let mut guard = match self.state.lock() {
+            Ok(g) => g,
+            Err(p) => {
+                // A call panicked while holding the session: fail closed.
+                self.locking.store(true, Ordering::SeqCst);
+                *p.into_inner() = None;
+                return Err(CoreError::Internal);
+            }
+        };
+        let Some(open) = guard.as_mut() else {
+            return Err(CoreError::SessionLocked);
+        };
+        let mut ctx = Ctx {
+            open,
+            session: self,
+            poison: false,
+        };
+        let r = f(&mut ctx);
+        if ctx.poison {
+            self.locking.store(true, Ordering::SeqCst);
+            *guard = None;
+            return Err(r.err().unwrap_or(CoreError::SessionLocked));
+        }
+        let t = r?;
+        if self.locking.swap(true, Ordering::SeqCst) {
+            // A lock request arrived during `f`: it wins, and `lock` drops
+            // the state once this guard is released.
+            return Err(CoreError::Cancelled);
+        }
+        let open = guard.take().ok_or(CoreError::SessionLocked)?;
+        Ok((t, open))
     }
 
     /// Locks the session (0008 §1.4): running calls stop at their next
@@ -563,6 +603,8 @@ pub(crate) mod hooks {
         LanPublished,
         /// Received session is platform-bound, before returning it.
         LanBound,
+        /// Rotation's recovery copy is pinned, still holding the session.
+        RotationCopied,
     }
 
     struct Armed {

@@ -6,7 +6,7 @@
 //! The header body is a canonical CBOR map; every key is required and an
 //! unknown key fails closed ([`StoreError::Unsupported`]): the header is
 //! security configuration, and a new field means a new format value.
-//! Development values, frozen in phase 1.16:
+//! 1.0 values (frozen, spec 0015 §4.1):
 //!
 //! | Key | Field | CBOR |
 //! |-----|-------|------|
@@ -30,10 +30,10 @@ use zeroize::Zeroizing;
 
 use crate::error::StoreError;
 
-/// The development vault format (also the SQLite `user_version`).
+/// The vault header format (frozen at 1.0).
 pub(crate) const FORMAT: u64 = 0x7FFF_0004;
 
-/// The header-MAC transcript label (development value).
+/// The header-MAC transcript label (frozen at 1.0).
 pub(crate) const MAC_LABEL: &str = "qv/header-mac/v1";
 
 /// The key generation of a new vault (0002 §3.5 adds 1 per rotation).

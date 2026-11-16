@@ -75,3 +75,13 @@ retest disposition. Do not mark D12 complete with this checklist.
 
 Owner selection of reviewer, spending and permitted material sharing remain
 required before engagement. No external contact is authorized by preparation.
+
+## 2026-11-16 source-review follow-up
+
+The owner requested a separate agent review instead of commissioning an
+outside party (0056 revision, 2026-11-15). That source/composition review and
+its repairs are in [0065/LAN-REVIEW.md](../0065-release-review-repairs/LAN-REVIEW.md),
+with a new exact source baseline and current checks. The 2026-11-09 manifest
+above remains historical. The agent review is not an independent-party audit;
+platform evidence and complete composition/error-transition qualification are
+not inferred from it. No external party was contacted.

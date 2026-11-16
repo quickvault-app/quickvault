@@ -292,10 +292,7 @@ fn info_unverified_and_full() {
     let out = piped(home.qv(["info", "-v", &arg(&vault)]), b"");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert!(out.stdout.starts_with("Vault header (unverified"));
-    assert!(
-        out.stdout
-            .contains("format:          0x7fff0005 (development")
-    );
+    assert!(out.stdout.contains("format:          0x7fff0005\n"));
     assert!(
         out.stdout
             .contains("Argon2id, 256 MiB, 3 iterations, 4 lanes")

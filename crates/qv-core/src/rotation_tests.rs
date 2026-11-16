@@ -213,6 +213,53 @@ fn rotate_refusals_leave_the_session_usable() {
     s.overview().unwrap();
 }
 
+/// Plan 0050 review finding 2: a mutation waiting while the recovery copy
+/// is written cannot commit before the rotation takes the vault, so the
+/// copy is exactly the rotated state.
+#[test]
+fn rotate_refuses_a_mutation_between_copy_and_rotation() {
+    use crate::session::hooks::{Point, arm};
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    let env = Env::new();
+    let core = env.core_with(Some(wide(&env)));
+    let s = Arc::new(unlock(&core, &env, PASSWORD).unwrap());
+    let root = s.root().unwrap();
+    add_entry(&s, root, "before the copy");
+    let before = s.overview().unwrap();
+    let draft = s.new_group(root, "after the copy").unwrap();
+
+    let (arrived_tx, arrived) = channel();
+    let (go, go_rx) = channel();
+    let rotating = {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || {
+            arm(Point::RotationCopied, arrived_tx, go_rx);
+            begin(&s, false)
+        })
+    };
+    arrived.recv_timeout(Duration::from_secs(60)).unwrap();
+    let writer = {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || s.save_group(draft).map(|_| ()))
+    };
+    // The writer waits for the session that the rotation still holds.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!writer.is_finished());
+    go.send(()).unwrap();
+    let mut r = rotating.join().unwrap().unwrap();
+    assert_eq!(err(writer.join().unwrap()), CoreError::SessionLocked);
+    confirm(&mut r);
+    r.install(None).unwrap();
+
+    let s = unlock(&core, &env, NEW).unwrap();
+    let after = s.overview().unwrap();
+    assert_eq!(after.groups, before.groups);
+    assert_eq!(after.entries, before.entries);
+    assert_eq!(after.local_seq, before.local_seq + 1);
+}
+
 #[test]
 fn rotate_without_confirmation_or_dropped_publishes_nothing() {
     let env = Env::new();

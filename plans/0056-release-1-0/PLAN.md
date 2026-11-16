@@ -2,7 +2,7 @@
 
 | Status | Created | Approved | Specs |
 |--------|---------|----------|-------|
-| In progress — agent pre-release work done 2026-11-14; owner actions and gated steps open | 2026-11-14 | 2026-11-14 (owner request "Prepare for 1.0"; details owner-delegated, standing 2026-11-02) | 0012 §1–3; 0009 §2, §5; 0002 §1.3; 0004 §4 |
+| In progress — review repairs and separate LAN source review in plan 0065; current platform/device and release gates still apply | 2026-11-14 | 2026-11-14 (owner request "Prepare for 1.0"; details owner-delegated, standing 2026-11-02) | 0012 §1–3; 0009 §2, §5; 0002 §1.3; 0004 §4 |
 
 ## Intent
 
@@ -116,7 +116,12 @@ deliberate freeze. Current state, from `plans/README.md` on 2026-11-14:
     `quick_unlock.rs`);
   - 0049 store import path (`qv-store/src/vault_import.rs`).
   Each plan's REVIEW.md lists what was and was not covered.
-- [ ] Remaining, in priority order, each in a fresh session:
+- [x] 2026-11-16, owner choice "Security-critical only": fresh-context
+  reviews of 0049, 0050, 0059, 0060, 0063 and 0064 (each plan's REVIEW.md);
+  the high and medium findings were fixed except those listed in
+  `docs/release-notes/1.0.0.md`. The UI and app plans ship unreviewed, as
+  the release notes say.
+- Superseded list (before the owner's choice), in priority order:
   - 0050 source repairs (storage leases, recovery-copy authorization,
     media capability);
   - 0052 rest (`fs.rs`, `security.rs`, `session.rs`, `console.rs`), with a
@@ -166,7 +171,11 @@ deliberate freeze. Current state, from `plans/README.md` on 2026-11-14:
 
 ### Step 7 — Format freeze (gated on Decision 2)
 
-- [ ] **Do:** only after the owner says the app is user-tested and ready:
+- [x] Done 2026-11-16 as [plan 0064](../0064-format-freeze/PLAN.md): the
+  formats are frozen as they are (owner Decision 1 C, no renumbering), spec
+  0015 registers them, golden vectors and files pin them; the KDF keeps its
+  parameters without a phone benchmark (owner-delegated).
+- Original text: only after the owner says the app is user-tested and ready:
   freeze the DDL, CBOR registry, profile IDs/parameters, archive and journal
   formats; replace development format values with release values; publish
   golden file vectors including the worst-case manifest at maximum budgets;
@@ -175,7 +184,9 @@ deliberate freeze. Current state, from `plans/README.md` on 2026-11-14:
 
 ### Step 8 — Release records and artifacts
 
-- [ ] **Do:** release notes with pinned dependencies (`Cargo.lock`),
+- [x] 2026-11-16: `docs/release-notes/1.0.0.md` (the release workflow uses
+  it as the release body), version 1.0.0, `CHANGELOG.md` 1.0.0 section.
+- **Do:** release notes with pinned dependencies (`Cargo.lock`),
   `cargo deny`/`cargo vet` results, audit status of security-critical crates
   (record honestly that ML-KEM/X-Wing/OPAQUE crates may be unaudited),
   known limitations (framework memory copies, Windows clipboard residuals,
@@ -324,3 +335,28 @@ None.
   --offline` on the fuzz manifest passes), so `cargo deny`/`cargo vet` were
   not required. Not run: the Windows cross Clippy (no Windows code changed).
   No commit, push or branch.
+
+- 2026-11-16: Owner requested completion of remaining review repairs and a
+  LAN protocol review, continuing an agent that exhausted usage. Plan 0065
+  consolidates the inherited staged changes and remaining work; its source
+  review found and repairs the initiator's missing local deadline and
+  quadratic LAN progress accounting. This fulfills the requested separate
+  agent source review, with no independent-party audit claim. Device,
+  near-budget/phone KDF, native Windows/CI and release decisions remain as
+  specified; no commit, push, branch or publication was made.
+
+- 2026-11-16: Plan 0065 implementation complete on the uncommitted tree:
+  remaining actionable review code findings repaired; separate LAN source
+  review completed with two medium implementation defects fixed. Current
+  workspace tests: 1,091 pass, 0 fail, 8 ignored (qualification/generators/child
+  helpers); app: 113 unit + 3 real-engine flows pass. SPDX/fmt/matrix,
+  all-target workspace/desktop/validation Clippy and Windows cross-Clippy
+  pass. Android app/instrumentation APKs build; vendor 14 and player 11 tests
+  pass; composited/software Linux media flows pass with no sampled download
+  files. No dependency/lockfile change. Wine clipboard test passes but locked
+  FileRenameInfoEx replacement fails with access denied, also in a standalone
+  probe; native Windows CI/attended validation is still required. Plan 0065
+  remains Implemented pending fresh review, not silently Reviewed. Its logs,
+  exact source baselines and release notes distinguish all remaining device,
+  KDF/capacity, composition/dependency and publication evidence. No commit,
+  push, branch, tag, install on a device, external contact or release action.

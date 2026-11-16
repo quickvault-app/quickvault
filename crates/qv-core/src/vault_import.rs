@@ -141,7 +141,7 @@ mod tests {
 
     // 0012 §1: Budget inconsistency
     #[test]
-    #[ignore = "disk-backed qualification writes several GiB; run explicitly for plan 0049"]
+    #[ignore = "disk-backed qualification writes about 16 GiB (source and copy); run explicitly for plan 0049"]
     fn vault_import_near_budget_streams_actual_bytes_and_reopens() {
         struct Counted {
             file: std::fs::File,
@@ -156,11 +156,17 @@ mod tests {
                 Ok(count)
             }
         }
+        // The fixture fills the ciphertext budget, whatever it is: 64 MiB
+        // attachments (about 1/128 of the 8 GiB budget), 25 per entry, until
+        // one is refused (review of plan 0049: the old fixed 990 MiB
+        // predated the 8 GiB budget).
+        const PART: u64 = 64 * 1024 * 1024;
         let env = Env::new();
         let source = env.unlock();
         let mut ids = Vec::new();
-        let mut final_entry = None;
-        for group in 0..4 {
+        let mut written = 0u64;
+        let sequence = 'fill: loop {
+            let group = ids.len();
             let entry = source
                 .save_entry(
                     source
@@ -172,37 +178,32 @@ mod tests {
                         .unwrap(),
                 )
                 .unwrap();
-            let parts = if group == 3 { 24 } else { 25 };
-            ids.push((entry.id_hex(), parts));
-            final_entry = Some(entry);
-            for part in 0..parts {
-                let mut input = std::io::repeat((group * 25 + part) as u8).take(10 * 1024 * 1024);
-                source
-                    .add_attachment(
-                        entry,
-                        &format!("capacity-{part}.bin"),
-                        "application/octet-stream",
-                        &mut input,
-                        None,
-                    )
-                    .unwrap();
+            ids.push((entry.id_hex(), 0usize));
+            for part in 0..25 {
+                let sequence = source.overview().unwrap().local_seq;
+                let mut input = std::io::repeat((group * 25 + part) as u8).take(PART);
+                match source.add_attachment(
+                    entry,
+                    &format!("capacity-{part}.bin"),
+                    "application/octet-stream",
+                    &mut input,
+                    None,
+                ) {
+                    Ok(_) => {
+                        ids.last_mut().unwrap().1 += 1;
+                        written += PART;
+                    }
+                    Err(e) => {
+                        assert_eq!(e, CoreError::Store(qv_store::StoreError::LimitExceeded));
+                        break 'fill sequence;
+                    }
+                }
             }
             eprintln!(
                 "import qualification fixture: {} MiB written",
-                (group * 25 + parts) * 10
+                written >> 20
             );
-        }
-        let sequence = source.overview().unwrap().local_seq;
-        assert_eq!(
-            err(source.add_attachment(
-                final_entry.unwrap(),
-                "over-budget.bin",
-                "application/octet-stream",
-                &mut std::io::repeat(7).take(10 * 1024 * 1024),
-                None
-            )),
-            CoreError::Store(qv_store::StoreError::LimitExceeded)
-        );
+        };
         assert_eq!(source.overview().unwrap().local_seq, sequence);
         let referenced = source
             .read(|ctx| {
@@ -221,7 +222,7 @@ mod tests {
         assert!(source.verify(None).unwrap().ok());
         source.lock();
         let physical = std::fs::metadata(&env.path).unwrap().len();
-        assert!(physical >= 990 * 1024 * 1024);
+        assert!(physical >= qv_store::MAX_TOTAL_CIPHERTEXT * 99 / 100);
         assert!(physical <= qv_store::MAX_DB_BYTES);
         let mut input = Counted {
             file: std::fs::File::open(&env.path).unwrap(),
@@ -258,7 +259,8 @@ mod tests {
         assert!(reopened.verify(None).unwrap().ok());
         reopened.lock();
         eprintln!(
-            "explicit import qualification: 990 MiB attachment plaintext; {referenced} referenced ciphertext bytes; {physical} physical source bytes; bounded reads and durable reopen pass"
+            "explicit import qualification: {} MiB attachment plaintext; {referenced} referenced ciphertext bytes; {physical} physical source bytes; bounded reads and durable reopen pass",
+            written >> 20
         );
     }
 
@@ -366,6 +368,9 @@ mod tests {
     fn vault_import_hostile_or_cancelled_input_is_never_published() {
         let env = Env::new();
         let core = env.core();
+        // Early header rejection need not create staging. Prepare it so the
+        // cleanup assertion still checks an actual existing directory.
+        qv_store::create_private_dirs(&env.dir.path().join("imports")).unwrap();
         assert!(
             core.stage_vault_import(&mut Cursor::new(b"not a database"), None)
                 .is_err()

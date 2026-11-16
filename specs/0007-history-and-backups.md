@@ -135,7 +135,10 @@ freeing space.
 
 Prune the oldest snapshots first until the budgets fit. Any commit that no
 longer fits the room prunes, whether or not it takes a snapshot; age and count
-are applied by the commit that takes a new one. A snapshot taken by the current
+are applied by the commit that takes a new one. Pruning for room happens only
+when the live data alone fits the room: when it does not, dropping snapshots
+would free nothing (their pages stay in the file), so the commit drops none,
+keeps no new ordinary snapshot, and succeeds or fails on its own. A snapshot taken by the current
 operation is never pruned by it. When an ordinary snapshot cannot fit even
 alone, the commit proceeds without it and reports how much it needed and how
 much room there was; frontends tell the user that the change was saved without
@@ -221,6 +224,9 @@ reference set. Purge acknowledgements must not imply independent copies vanished
    explicit, warned user choice (0004 §6.4).*
 
 ## Changelog
+
+- 2026-11-16: §3.3: no pruning for room when the live data alone does not fit
+  (review of plan 0060, finding 1).
 
 - 2026-11-15: §3.3: snapshot-only data uses the room the vault does not need
   (file cap and volume free space, no reserved disk share) instead of a 1 GiB budget; any

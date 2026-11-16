@@ -1,4 +1,4 @@
-# status: development-only; regenerated freely until roadmap phase 1.16
+# status: frozen at 1.0 (spec 0015 §6); never regenerated
 # Key hierarchy (spec 0002 §3.1–3.3, §3.6), computed by crosscheck.py
 # with the Python standard library. `generation` is a 4-byte big-endian integer.
 
@@ -35,6 +35,8 @@ purpose_info_recovery_ed25519 = 846d71762f707572706f73652f7631707265636f76657279
 purpose_recovery_ed25519 = c647023ef61d16ec01aaabcabd0092418dc33c7b487fe0b7ca36cec45337ddbd
 purpose_info_recovery_mldsa65 = 846d71762f707572706f73652f7631707265636f766572792d6d6c64736136350101
 purpose_recovery_mldsa65 = c1681be594bdca38d4fea36ffcc509d97af5262908213c27f53f23a6e655664f
+purpose_info_device_view = 846d71762f707572706f73652f76316b6465766963652d766965770101
+purpose_device_view = f7d9a179f82bbfa2ae2ddb4accacc424ae9dae26ad38be811f0e7c8fd59081c4
 record_key_info = 827071762f7265636f72642d6b65792f76315001010101010101010101010101010101
 record_key = ffff0ab9cb7a6c38cddaef09502e931262cddf75a7042ca6ba3504ba58fe72b1
 attachment_key_info = 827471762f6174746163686d656e742d6b65792f76315002020202020202020202020202020202

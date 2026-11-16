@@ -38,11 +38,13 @@ not migrate record encryption, signatures or TLS.
 | account-auth / 1 | RFC 9807 application profile in 0006 |
 | platform-wrap | Backend-specific mechanisms in §5, distinct from password wrapping |
 
-1.3. Password-kdf/1 is a candidate until benchmarked before the first release.
-It MUST meet the 64 MiB hard floor and target about one second on a supported
-mid-range Android device (at most two seconds on the supported low-end target).
-If the candidate changes before publication, update the profile and vectors
-together; after publication introduce a new profile. No arbitrary parameters
+1.3. Password-kdf/1 is frozen at 1.0 with the parameters above (owner-delegated
+2026-11-16, plan 0064). It MUST meet the 64 MiB hard floor and target about one
+second on a supported mid-range Android device (at most two seconds on the
+supported low-end target). No measured phone run preceded 1.0: the evidence is
+the host unlock time of plan 0053 (about half a second including the
+derivation) and the owner's daily unlocks on their Android test phone. A
+parameter change after publication introduces a new profile. No arbitrary parameters
 from an untrusted file are executed. Do not publish unsupported attacker-rate
 estimates as security guarantees.
 
@@ -107,7 +109,7 @@ derivation_profile]`.
 | recovery-ed25519 | Independent Ed25519 recovery-key seed |
 | recovery-mldsa65 | Independent ML-DSA-65 recovery-key seed |
 | lan-proof | VK possession proofs for one LAN sync session (0013 §4.6, §4.8) |
-| device-view | Seal small per-device UI notes kept outside the vault file (the last opened group) and MAC their lookup tag (0009 §1.8; plan 0063) |
+| device-view | Seal small per-device UI notes kept outside the vault file (the last opened group) and MAC their lookup tag (0009 §1.8; plan 0063). AAD `["qv/device-view/note/v1", vault_id, key_generation, data_profile]`; notes padded to one length; tag MAC over `["qv/device-view/tag/v1", vault_id, key_generation]`. The tag is the same on every device holding the vault, so two devices' app data shows they share a vault |
 
 Labels are never reused. Algorithm-specific seeds are separate derivations;
 do not reuse one signature algorithm's seed for another.
@@ -239,6 +241,13 @@ biometric lockout or a failed unwrap; a prompt the user or the system
 dismisses is not one, and the platform prompt's own retries within one
 attempt are not counted separately. The attempt is recorded before the
 prompt opens, so an interrupted prompt counts (owner, 2026-11-07, plan 0045).
+After the key is released, a phrase that does not open the vault, a missing,
+damaged or mismatched anchor, a changed binding (vault, generation or
+password keyslot) or a refused platform check destroys the slot and its
+handles. A cancellation, or a passing storage failure (an I/O error, full
+storage or a busy vault file), keeps them: it says nothing about the key.
+The app names the refusing step without vault data (owner-delegated,
+2026-11-16; review of plan 0063).
 
 ### 6. Hybrid asymmetric cryptography
 
@@ -318,12 +327,20 @@ password guessing and device compromise are separate from vault encryption.
 
 ## Open Questions
 
-1. Benchmark password-kdf/1 before publication.
+1. ~~Benchmark password-kdf/1 before publication.~~ Resolved 2026-11-16: frozen
+   as is (§1.3); a measured phone run remains outstanding evidence.
 2. Implement and validate platform-wrap backends per target; disable unavailable
    mechanisms rather than relying on an unverified portability assumption.
 
 ## Changelog
 
+- 2026-11-16: §1.3 password-kdf/1 frozen at 1.0 with unchanged parameters;
+  Open Question 1 resolved (owner-delegated, plan 0064).
+
+- 2026-11-16: §5.4: which failures after the key's release destroy the
+  quick slot; cancellations and passing storage failures keep it
+  (owner-delegated, review of plan 0063).
+- 2026-11-16: §3.3 `device-view`: canonical AAD and tag message (§7.2), fixed-length notes, tag linkability stated (review of plan 0063).
 - 2026-11-15: §3.3: purpose label `device-view` for per-device UI notes kept outside the vault file (owner request, plan 0063).
 - 2026-11-09: Add owner-approved lan/2 and ephemeral lan-pake/1; retain storage profiles.
 

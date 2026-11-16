@@ -7,7 +7,61 @@ Dates are ISO 8601. Newest first within each section.
 
 ## Unreleased
 
+- 2026-11-16: Complete the remaining 1.0 review repairs (plan 0065): compare
+  full compaction ciphertext, interrupt its copy on lock/cancel and retain
+  both Windows process locks; reject unsuitable picked files at their SQLite
+  header; isolate Android document streams by handle; serialize rotation's
+  recovery copy with its source; keep biometric enrollment on transient storage
+  errors; refresh remembered-view tags. Add snapshot replay/downgrade/crash and
+  full-storage regressions, standalone golden-archive restore, frozen legacy
+  and rotated vault fixtures, and Windows golden coverage.
+- 2026-11-16: Finish older partial-review repairs: cancelled successful
+  biometric prompts retain their attempt budget; Wayland pastes respect
+  cancellation and the clipboard hold deadline and discard unused offers;
+  Windows publishes clipboard history/cloud exclusion hints before plaintext.
+  Windows compaction uses POSIX replacement while retaining both file locks.
+- 2026-11-16: Review LAN/2 source and composition: share the initiator's
+  deadline with local verification/commit, and make transfer progress
+  accounting linear. Findings and review limits are in plan 0065's
+  `LAN-REVIEW.md`; no independent security-audit claim.
+
+## 1.0.0 — 2026-11-16
+
+The first release: offline vaults on Linux, Windows and Android, with
+direct LAN sync. Release notes: `docs/release-notes/1.0.0.md`.
+
 ### Changed
+
+- 2026-11-16: Fixes from the 1.0 fresh-context reviews of plans 0049, 0050,
+  0059, 0060, 0063 and 0064:
+  - on a nearly full disk, a save no longer deletes every snapshot without
+    freeing anything; snapshots are pruned for room only when that can help
+    (0007 §3.3);
+  - a snapshot with a missing object no longer blocks every later save, or
+    its own deletion;
+  - automatic compaction gives way to a lock request;
+  - one bad temporary file no longer stops the cleanup of the others;
+  - after a failed import that discarded the staged file, the app no longer
+    keeps it pending;
+  - the per-device "last group" notes use canonical CBOR AAD and fixed-length
+    sealing (0002 §3.3); the remembered group is forgotten once;
+  - the golden tests also check what every record key means, and the hashes
+    of the committed golden files;
+  - spec 0015 now also registers the chunk, LAN-link and receipt layouts and
+    the anchor, rotation and temporary file names.
+- 2026-11-16: Version 1.0.0 (plan 0056 step 8): workspace and internal
+  crate versions, both lockfiles.
+- 2026-11-16: Vault formats frozen at 1.0 exactly as the development builds
+  wrote them, so existing vaults open unchanged (owner decision, plan 0064).
+  New spec 0015 registers every file constant, table and CBOR structure;
+  golden vectors pin them: canonical encodings of every store structure and
+  record kind, the worst-case manifest's length and hash, and a reference
+  vault, anchor and archive that every later build must open unchanged
+  (`crates/qv-store/tests/golden/`, `crates/qv-model/tests/golden/`). The
+  crypto vectors are marked frozen and gain the `device-view` purpose key,
+  checked against the independent Python derivation. Password-kdf/1 keeps
+  Argon2id 256 MiB, t=3, p=4 without a measured phone run (0002 §1.3). `qv
+  info` no longer labels the format "development".
 
 - 2026-11-15: Releases (plan 0056): pushing a `v<version>` tag builds and
   publishes the Android APK, the Windows executables, a Debian package, an

@@ -49,7 +49,7 @@
 //! | `crash` | crash-injection points (active in this crate's tests only) | — |
 //! | `unsupported` | the same API failing closed on targets other than Linux/Android | — |
 //!
-//! # Development format (volatile until the owner's pre-1.0 freeze)
+//! # 1.0 format (frozen; registry in spec 0015)
 //!
 //! | Item | Value |
 //! |------|-------|
@@ -217,6 +217,9 @@ mod error;
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 #[cfg_attr(windows, path = "fs_windows.rs")]
 mod fs;
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+mod golden_tests;
 mod head;
 mod header;
 #[cfg(any(target_os = "linux", target_os = "android", windows))]

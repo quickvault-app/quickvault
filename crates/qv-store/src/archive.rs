@@ -11,7 +11,7 @@
 //! frame = u32be length || bytes
 //! ```
 //!
-//! Development values, frozen in phase 1.16:
+//! 1.0 values (frozen, spec 0015 §4.9):
 //!
 //! | Item | Value |
 //! |------|-------|
@@ -44,9 +44,8 @@
 //! vault header already uses) over the canonical array `["qv/archive-header/
 //! v1", header_body]`, where `header_body` is exactly the stored header map
 //! without `header_mac`. The key is derived for the header's vault ID and key
-//! generation with [`ARCHIVE_DERIVATION_PROFILE`], a development value: the
-//! header carries no derivation-profile field of its own, so phase 1.16
-//! freezes either that constant or a new field.
+//! generation with [`ARCHIVE_DERIVATION_PROFILE`], frozen at 1.0: the header
+//! carries no derivation-profile field of its own.
 //!
 //! Order of operations for hostile bytes (0004 §6.3, 0004 §4.1): fixed prefix
 //! → `u32be` header length against the budget → bounded strict decode → the
@@ -76,24 +75,23 @@ use crate::object::Scope;
 /// The fixed prefix's magic (0004 §6.1).
 pub const ARCHIVE_MAGIC: [u8; 7] = *b"QVSNAP\0";
 
-/// The archive format version (development value, phase 1.16).
+/// The archive format version (frozen at 1.0).
 pub const ARCHIVE_FORMAT: u8 = 0x01;
 
-/// Most bytes of an archive header (0004 §4.1, §6.2). Development value.
+/// Most bytes of an archive header (0004 §4.1, §6.2).
 pub const MAX_ARCHIVE_HEADER_BYTES: usize = 64 * 1024;
 
-/// The header-MAC transcript label (development value, phase 1.16).
+/// The header-MAC transcript label (frozen at 1.0).
 pub const ARCHIVE_HEADER_LABEL: &str = "qv/archive-header/v1";
 
 /// The archive file extension (0004 §6.1).
 pub const ARCHIVE_EXTENSION: &str = "qvsnap";
 
-/// The derivation profile of the archive header-MAC key (development value:
-/// the header carries no derivation-profile field; phase 1.16 freezes this
-/// constant or adds the field).
+/// The derivation profile of the archive header-MAC key (frozen at 1.0: the
+/// header carries no derivation-profile field).
 pub const ARCHIVE_DERIVATION_PROFILE: DerivationProfile = DerivationProfile::V1;
 
-/// The MAC profile of the archive header MAC (development value).
+/// The MAC profile of the archive header MAC (frozen at 1.0).
 pub const ARCHIVE_MAC_PROFILE: MacProfile = MacProfile::V1;
 
 /// The object-hash profile of every archive hash (0004 §3.5).
@@ -1776,6 +1774,31 @@ mod platform {
 
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 pub use platform::{PublishedSnapshot, SnapshotDir, SnapshotEntry};
+
+#[cfg(test)]
+impl ArchiveHeader {
+    /// A fixed header sealed with `vk`, for the frozen golden encodings
+    /// (spec 0015 §6, plan 0064).
+    pub(crate) fn golden(vk: &VaultKey) -> Result<Self, StoreError> {
+        let mut h = Self {
+            archive_id: [0x22; 16],
+            vault_id: VaultId([0x11; 16]),
+            key_generation: KeyGeneration(1),
+            data_profile: StoredDataProfile::V1,
+            min_data_profile: StoredDataProfile::V1,
+            min_derivation_profile: DerivationProfile::V1,
+            created_at: Timestamp(1_700_000_000_000),
+            manifest_hash: [0x33; 32],
+            reference_digest: [0x44; 32],
+            object_count: 5,
+            total_length: 6 * 1024,
+            password_slot: None,
+            header_mac: MacTag::from_bytes([0; 32]),
+        };
+        h.seal_mac(vk)?;
+        Ok(h)
+    }
+}
 
 #[cfg(test)]
 mod tests {

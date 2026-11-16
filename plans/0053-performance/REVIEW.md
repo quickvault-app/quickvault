@@ -107,3 +107,12 @@ test-only KDF memo and repository cleanup); see plan 0056's execution log.
 ## Escalations for the owner
 
 None. The phone performance run stays open in plan 0056 step 5.
+
+## 2026-11-16 disposition follow-up (plan 0065)
+
+The two lows remain the previously accepted 1.0 limits: duplicate title
+residency is charged to the shared budget, and standard Unicode lowercase
+intermediates have best-effort cleanup (0008 §6). No custom Unicode folding
+or unmeasured cache change is introduced. Release notes now state the
+intermediate-copy limitation explicitly. Phone performance evidence remains
+outstanding; the original review verdict is unchanged.

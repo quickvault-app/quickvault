@@ -66,3 +66,20 @@ Not assessed.
 
 None blocking. Findings 1–2 are small hardening items for the remaining
 0052 review, which needs a real Windows run (plan 0056 steps 3–4).
+
+## 2026-11-16 repair follow-up (plan 0065)
+
+Finding 2 has a source repair: all exclusion formats are published before
+CF_UNICODETEXT, so any hint failure returns without publishing plaintext.
+The existing FFI calls are reordered; a per-hint fault regression observes
+no text format after failure. Finding 1 remains the documented OS-copy
+limit: no unverified HGLOBAL access is added during WM_DESTROYCLIPBOARD.
+
+Compaction now closes SQLite while retaining both file locks and uses
+FileRenameInfoEx POSIX replacement through a write-through handle, followed
+by a flush; it fails closed rather than dropping a lock on unsupported filesystems.
+A new FFI regression checks both handles and the replacement lock identity.
+Cross-Windows Clippy and Wine outcomes are recorded in plan 0065. Wine
+rejects replacement while the destination is open, including a standalone
+API probe; assertions remain enabled. Native Windows CI and attended gates
+remain required; this is no whole-plan or fresh-context approval.

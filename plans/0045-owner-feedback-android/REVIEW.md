@@ -67,3 +67,14 @@ Not assessed.
 
 None blocking. The device check and the review of the remaining 0045 steps
 are in plan 0056 steps 3 and 5.
+
+## 2026-11-16 repair follow-up (plan 0065)
+
+Both actionable lows have source repairs: qv-platform refunds the reserved
+attempt when a successful prompt is cancelled before delivery; a regression
+repeats this beyond the three-attempt limit. Core preserves enrollment for
+transient storage/cancellation failures and invalidates it for actual binding,
+credential or hardware failures, with exact-diagnostic tests. The inherited
+0002 §5.4 amendment records that policy. Current gates are in plan 0065;
+no fresh-context verdict on its authored repairs or phone qualification is
+implied by this follow-up.

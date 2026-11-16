@@ -153,8 +153,11 @@ pub(crate) fn snapshot_only_bytes(
                 rusqlite::Error::QueryReturnedNoRows => Ok(None),
                 err => Err(e(err)),
             })?;
-        // A retained object must be stored; unlock checked that.
-        let len = len.ok_or(StoreError::Integrity)?;
+        // A retained object should be stored, but unlock checks only the
+        // live manifest's objects. A missing one takes no room here, so a
+        // damaged snapshot never blocks every later commit, including the
+        // one that deletes it; `verify` reports it (review of plan 0059).
+        let Some(len) = len else { continue };
         total = total.saturating_add(u64::try_from(len).map_err(|_| StoreError::Integrity)?);
     }
     let named: BTreeSet<[u8; 32]> = index

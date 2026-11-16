@@ -445,7 +445,30 @@ pub fn sync_with_code(
     timeouts: &LanTimeouts,
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<RoundReport, LanError> {
-    let expires = Instant::now() + PAIRING_WINDOW_MAX;
+    sync_with_code_until(
+        code,
+        extra,
+        policy,
+        vault,
+        timeouts,
+        cancelled,
+        Instant::now() + PAIRING_WINDOW_MAX,
+    )
+}
+
+/// Sync using the caller's original deadline, shared with its local staging,
+/// validation and commit work (0013 §15.6). Never extends the ten-minute cap.
+pub fn sync_with_code_until(
+    code: JoinCode,
+    extra: &[SocketAddr],
+    policy: EndpointPolicy,
+    vault: &dyn JoinerVault,
+    timeouts: &LanTimeouts,
+    cancelled: &(dyn Fn() -> bool + Sync),
+    expires: Instant,
+) -> Result<RoundReport, LanError> {
+    let expires = expires.min(Instant::now() + PAIRING_WINDOW_MAX);
+    check(expires, cancelled)?;
     timeouts.validate()?;
     let ctx = vault.context()?;
     let candidates = code.candidates(extra, policy);

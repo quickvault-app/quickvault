@@ -72,8 +72,9 @@ that it passes or that the proposed protocol is secure.
 
 Before offline vault release, freeze the physical DDL, integer-key CBOR field
 registry, profile IDs/parameters, archive format and golden file vectors,
-including a worst-case manifest at the maximum budgets (0004 §4.2). Benchmark
-KDF and resource budgets on the supported targets. Test transaction/anchor crash
+including a worst-case manifest at the maximum budgets (0004 §4.2); done for
+1.0 in 0015 (plan 0064). Benchmark KDF and resource budgets on the supported
+targets (1.0: host measurements only, 0002 §1.3). Test transaction/anchor crash
 points, permissions, disk-full behavior, malformed SQLite/CBOR and redacted
 errors.
 
@@ -182,6 +183,7 @@ implementation evidence, not claims that this repository already has them.
 
 ## Changelog
 
+- 2026-11-16: §3 records the 1.0 format freeze (0015, plan 0064) and its host-only benchmark evidence.
 - 2026-11-15: §3: release artifacts carry SHA-256 checksums and are unsigned; the Android APK uses one stable project key kept as a CI secret (owner decision, plan 0056).
 - 2026-11-15: The "Snapshot disk growth" row covers room-based pruning and interrupted or unverified compaction (plan 0060).
 - 2026-11-15: The large-vault fixture boundary follows the 8 GiB ciphertext budget; the "Snapshot disk growth" row tests snapshots kept inside commits (plan 0059).

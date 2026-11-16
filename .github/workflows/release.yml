@@ -38,10 +38,16 @@ jobs:
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # The release record (docs/release-notes/<version>.md) is the body
+          # when there is one.
+          notes="docs/release-notes/$VERSION.md"
+          if [ -f "$notes" ]; then set -- --notes-file "$notes"; else
+            set -- --notes "Unsigned artifacts; check them against SHA256SUMS. See CHANGELOG.md and docs/RELEASE.md."
+          fi
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
-            --title "QuickVault $GITHUB_REF_NAME" \
-            --notes "Unsigned artifacts; check them against SHA256SUMS. See CHANGELOG.md and docs/RELEASE.md."
+            --title "QuickVault $GITHUB_REF_NAME" "$@"
 
   android:
     needs: draft

@@ -360,7 +360,7 @@ manifest and head share the existing Write commit, followed by the anchor.
 Identical redelivery creates no new commit; pending anchors finish first.
 Working local password slots, writer counters and remote checkpoints remain
 unchanged by receipt. Creation/restore/rotation initialize fresh empty receipts.
-The volatile schema/header is 0x7FFF0003 and manifest 0x7FFF0002, with no migration.
+The 1.0 formats are registered in 0015 (frozen, plan 0064).
 Roadmap 2.2c (0028) adds core/CLI archive merge, immutable export and explicit
 complete-version conflict resolution. Core
 serializes stable-source authentication, a mandatory recovery copy, bounded
@@ -378,8 +378,8 @@ Attachment resolutions stream new encrypted chunk objects without shared roles;
 final entry resolution refuses affected attachment conflicts and atomically
 finalizes non-conflicted owned attachment metadata. Local slotless snapshot
 recovery preserves conflicting keyslot heads using the authenticated source's
-working slot in the new baseline. Formats stay volatile; no independent security
-or release claim is implied.
+working slot in the new baseline. No independent security or release claim is
+implied.
 
 Roadmap 2.3 adds qv-platform with injected secure-input, clipboard, lifecycle,
 keystore and protection-status traits. Linux uses pinned zbus 6.2.0 for a
@@ -723,10 +723,11 @@ supported-device release evidence remains incomplete. The foundation is
 Implemented and requires a fresh-context implementation review. This work does not
 authorize a release.
 
-The project is pre-1.0 and every format stays volatile (owner decision
-2026-10-30). The 0012 §3 format freeze, golden vectors and supported-device
-KDF tuning wait for an unscheduled pre-1.0 release step, after the owner's
-user testing.
+The formats are frozen at 1.0 exactly as the last development build wrote
+them (owner, 2026-11-16, plan 0064): registry in
+[0015](specs/0015-format-registry.md), golden vectors in
+`crates/qv-store/tests/golden/`. Password-kdf/1 keeps its parameters without a
+measured phone run (0002 §1.3).
 
 Future implementations must satisfy the acceptance criteria in
 [0012 — Security Validation](specs/0012-security-validation.md).

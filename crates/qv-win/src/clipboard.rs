@@ -45,6 +45,11 @@ const EXCLUSIONS: [(&str, u32); 3] = [
     ("CanUploadToCloudClipboard", 0),
 ];
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_EXCLUSION: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 /// The current clipboard sequence number.
 pub fn sequence() -> u32 {
     // SAFETY: no arguments.
@@ -225,6 +230,29 @@ impl Owner {
             if unsafe { EmptyClipboard() } == 0 {
                 return Err(io::Error::last_os_error());
             }
+            // Publish every exclusion before any plaintext. There is no
+            // fallible operation after text publication: an exclusion failure
+            // cannot expose text when CloseClipboard makes formats visible.
+            for (name, value) in EXCLUSIONS {
+                #[cfg(test)]
+                if FAIL_EXCLUSION.with(|f| f.get().is_some_and(|i| EXCLUSIONS[i].0 == name)) {
+                    return Err(io::Error::other("synthetic exclusion failure"));
+                }
+                let name: Vec<u16> = name.encode_utf16().chain([0]).collect();
+                // SAFETY: NUL-terminated name.
+                let format = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
+                if format == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let data = value.to_le_bytes();
+                let h = global_copy(data.as_ptr(), data.len())?;
+                // SAFETY: as above; the system owns `h` on success.
+                if unsafe { SetClipboardData(format, h) }.is_null() {
+                    let e = io::Error::last_os_error();
+                    global_discard(h);
+                    return Err(e);
+                }
+            }
             // Copy the text plus a terminating NUL unit into the block.
             let bytes = text.len() + 2;
             // SAFETY: plain allocation; null on failure.
@@ -254,22 +282,6 @@ impl Owner {
                 let e = io::Error::last_os_error();
                 global_discard(h);
                 return Err(e);
-            }
-            for (name, value) in EXCLUSIONS {
-                let name: Vec<u16> = name.encode_utf16().chain([0]).collect();
-                // SAFETY: NUL-terminated name.
-                let format = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
-                if format == 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                let data = value.to_le_bytes();
-                let h = global_copy(data.as_ptr(), data.len())?;
-                // SAFETY: as above; the system owns `h` on success.
-                if unsafe { SetClipboardData(format, h) }.is_null() {
-                    let e = io::Error::last_os_error();
-                    global_discard(h);
-                    return Err(e);
-                }
             }
             Ok(())
         })();
@@ -338,6 +350,18 @@ mod tests {
         assert_ne!(theirs, seq);
         assert!(!owner.clear_if(seq).unwrap());
         assert!(other.clear_if(theirs).unwrap());
+        // Failure of any exclusion must publish no CF_UNICODETEXT, even
+        // briefly between closing and the error cleanup path.
+        for index in 0..EXCLUSIONS.len() {
+            FAIL_EXCLUSION.with(|f| f.set(Some(index)));
+            assert!(owner.set_text(&text).is_err());
+            FAIL_EXCLUSION.with(|f| f.set(None));
+            owner.open().unwrap();
+            // SAFETY: the clipboard is open; querying a fixed known format.
+            assert!(unsafe { GetClipboardData(CF_UNICODETEXT) }.is_null());
+            // SAFETY: balancing owner.open above.
+            unsafe { CloseClipboard() };
+        }
         owner.pump(Duration::from_millis(10));
     }
 }

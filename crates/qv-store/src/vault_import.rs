@@ -150,6 +150,34 @@ fn stage_bounded(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<PendingVaultImport, StoreError> {
     check_cancel(cancelled)?;
+    // Inspect only the fixed public header before creating/writing staging.
+    // Provider hints are not used; this is rejection, never authentication.
+    let mut header = [0u8; 100];
+    let mut read = 0;
+    while read < header.len() {
+        check_cancel(cancelled)?;
+        match input.read(&mut header[read..]) {
+            Ok(0) => return Err(StoreError::NotAVault),
+            Ok(n) => read += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(crate::error::io_err(e)),
+        }
+    }
+    if &header[..16] != b"SQLite format 3\0" || header[16..18] != [0x10, 0] {
+        return Err(StoreError::NotAVault);
+    }
+    let pages = u32::from_be_bytes(
+        header[28..32]
+            .try_into()
+            .map_err(|_| StoreError::NotAVault)?,
+    );
+    let declared = u64::from(pages) * 4096;
+    if declared == 0 {
+        return Err(StoreError::NotAVault);
+    }
+    if declared > limit {
+        return Err(StoreError::LimitExceeded);
+    }
     let dir = SnapshotDir::open(dir)?;
     let staging = Arc::new(Staging {
         dir: dir.path().to_owned(),
@@ -157,11 +185,12 @@ fn stage_bounded(
     fs::remove_stale_temps(&dir.path().join("source.qvault"))?;
     fs::remove_stale_temps(&dir.path().join("archive.qvsnap"))?;
     let (lock, path) = fs::create_temp(&dir.path().join("source.qvault"))?;
-    let mut total = 0u64;
+    lock.write_all(&header)?;
+    let mut total = header.len() as u64;
     let mut buffer = [0u8; 64 * 1024];
     loop {
         check_cancel(cancelled)?;
-        let available = usize::try_from((limit - total).min(buffer.len() as u64))
+        let available = usize::try_from((declared - total).min(buffer.len() as u64))
             .map_err(|_| StoreError::LimitExceeded)?;
         // Read one extra byte at the boundary, without writing it to staging.
         let wanted = available.max(1);
@@ -177,6 +206,9 @@ fn stage_bounded(
         }
         lock.write_all(&buffer[..count])?;
         total += count as u64;
+    }
+    if total != declared {
+        return Err(StoreError::Integrity);
     }
     lock.sync()?;
     check_cancel(cancelled)?;
@@ -264,19 +296,63 @@ mod tests {
     #[test]
     fn vault_import_bounds_actual_bytes_and_cleans_failed_staging() {
         let dir = TestDir::new();
-        let mut source = Cursor::new(vec![7; 17]);
+        let mut bytes = vec![0; 4097];
+        bytes[..16].copy_from_slice(b"SQLite format 3\0");
+        bytes[16..18].copy_from_slice(&4096u16.to_be_bytes());
+        bytes[28..32].copy_from_slice(&1u32.to_be_bytes());
+        let mut source = Cursor::new(&bytes);
         assert_eq!(
-            err(stage_bounded(dir.path(), &mut source, 16, &|| false)),
+            err(stage_bounded(dir.path(), &mut source, 4096, &|| false)),
             StoreError::LimitExceeded
         );
-        assert_eq!(source.position(), 17);
+        assert_eq!(source.position(), 4097);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-        let mut exact = Cursor::new(vec![7; 16]);
+        let mut exact = Cursor::new(&bytes[..4096]);
         assert_ne!(
-            err(stage_bounded(dir.path(), &mut exact, 16, &|| false)),
+            err(stage_bounded(dir.path(), &mut exact, 4096, &|| false)),
             StoreError::LimitExceeded
         );
-        assert_eq!(exact.position(), 16);
+        assert_eq!(exact.position(), 4096);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    // 0012 §1: Hostile SQLite/CBOR
+    #[test]
+    fn vault_import_refuses_bad_headers_before_staging_payload() {
+        let dir = TestDir::new();
+        for kind in 0..4 {
+            let mut bytes = fixture().bytes.clone();
+            match kind {
+                0 => bytes[0] ^= 1,
+                1 => bytes[16..18].copy_from_slice(&512u16.to_be_bytes()),
+                2 => bytes[28..32].fill(0),
+                _ => bytes[28..32].copy_from_slice(&u32::MAX.to_be_bytes()),
+            }
+            let mut source = Cursor::new(bytes);
+            let error = err(PendingVaultImport::stage(dir.path(), &mut source, &|| {
+                false
+            }));
+            assert_eq!(
+                error,
+                if kind == 3 {
+                    StoreError::LimitExceeded
+                } else {
+                    StoreError::NotAVault
+                }
+            );
+            assert_eq!(source.position(), 100);
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+        let bytes = &fixture().bytes;
+        let mut truncated = Cursor::new(&bytes[..bytes.len() - 1]);
+        assert_eq!(
+            err(PendingVaultImport::stage(
+                dir.path(),
+                &mut truncated,
+                &|| false
+            )),
+            StoreError::Integrity
+        );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 

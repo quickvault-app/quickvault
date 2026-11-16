@@ -4,7 +4,8 @@
 //! data-control protocol (plan 0055): `ext_data_control_manager_v1`, else
 //! `zwlr_data_control_manager_v1`, which share their request and event
 //! layout. It needs no window, so the CLI can use it. It never reads the
-//! clipboard; other clients' offers are skipped by their size. Compositors
+//! clipboard; other clients' offers are destroyed without receiving data.
+//! Compositors
 //! without data-control (GNOME) make [`Owner::start`] fail, and the caller
 //! falls back to X11.
 //!
@@ -359,14 +360,14 @@ pub(super) fn available() -> bool {
 
 /// Writes `bytes` to a requester's pipe within [`TRANSFER`]. Rust programs
 /// ignore SIGPIPE, so a closed reader is an error here, not a signal.
-fn write_all(fd: &OwnedFd, bytes: &[u8]) -> bool {
+fn write_all(fd: &OwnedFd, bytes: &[u8], end: Instant, cancel: &dyn Fn() -> bool) -> bool {
     if rustix::fs::fcntl_setfl(fd, rustix::fs::OFlags::NONBLOCK).is_err() {
         return false;
     }
-    let until = Instant::now() + TRANSFER;
+    let until = end.min(Instant::now() + TRANSFER);
     let mut at = 0;
     while let Some(rest) = bytes.get(at..).filter(|r| !r.is_empty()) {
-        if Instant::now() >= until {
+        if cancel() || Instant::now() >= until {
             return false;
         }
         match rustix::io::write(fd, rest) {
@@ -435,12 +436,12 @@ impl Owner {
         // A protocol error (for example no data-control on this seat)
         // surfaces here; requests that arrived meanwhile are served.
         for event in owner.wire.roundtrip()? {
-            owner.handle(event, value)?;
+            owner.handle(event, value, until)?;
         }
         Ok(owner)
     }
 
-    fn handle(&mut self, event: Event, value: &[u8]) -> Result<(), PlatformError> {
+    fn handle(&mut self, event: Event, value: &[u8], end: Instant) -> Result<(), PlatformError> {
         match (event.object, event.opcode) {
             (DISPLAY, 0) => Err(PlatformError::Unavailable),
             (object, 0) if object == self.source => {
@@ -451,8 +452,10 @@ impl Owner {
                     .pop_front()
                     .ok_or(PlatformError::Unavailable)?;
                 if mime == HINT_MIME.as_bytes() {
-                    let _ = write_all(&fd, b"secret");
-                } else if TEXT_MIMES.iter().any(|m| m.as_bytes() == mime) && write_all(&fd, value) {
+                    let _ = write_all(&fd, b"secret", end, &*self.wire.cancel);
+                } else if TEXT_MIMES.iter().any(|m| m.as_bytes() == mime)
+                    && write_all(&fd, value, end, &*self.wire.cancel)
+                {
                     // 0008 §3: the whole value reached the requester's pipe.
                     self.delivered = true;
                 }
@@ -463,6 +466,15 @@ impl Owner {
                 Ok(())
             }
             (object, 2) if object == self.device => Err(PlatformError::Unavailable),
+            (object, 0) if object == self.device => {
+                // Both bound data-control v1 interfaces use offer.destroy=1.
+                // We never receive other selections, so retain no offer.
+                let offer = Args::new(&event.body).u32()?;
+                if event.body.len() != 4 || offer < 0xff00_0000 {
+                    return Err(PlatformError::Unavailable);
+                }
+                self.wire.send(Msg::new(offer, 1), end)
+            }
             _ => Ok(()), // other objects: offers of the current selection
         }
     }
@@ -494,7 +506,7 @@ impl Owner {
                 last = Some(left);
             }
             if let Some(event) = self.wire.next((now + SLICE).min(end))? {
-                self.handle(event, value)?;
+                self.handle(event, value, end)?;
             }
         }
     }
@@ -589,8 +601,8 @@ mod tests {
             }
             self.done();
         }
-        /// Expects the binds and selection setup; returns (source, manager name bound).
-        fn setup(&mut self) -> (u32, Vec<u8>) {
+        /// Expects setup; returns (source, manager name bound, device).
+        fn setup(&mut self) -> (u32, Vec<u8>, u32) {
             let (_, _, seat) = self.request();
             let mut a = Args::new(&seat);
             assert_eq!(a.u32().unwrap(), 1);
@@ -610,13 +622,14 @@ mod tests {
             }
             assert!(offered.iter().any(|m| m == b"UTF8_STRING"));
             assert!(offered.iter().any(|m| m == HINT_MIME.as_bytes()));
-            let (_, op, _) = self.request(); // get_data_device
+            let (_, op, body) = self.request(); // get_data_device
             assert_eq!(op, 1);
+            let device = Args::new(&body).u32().unwrap();
             let (_, op, body) = self.request(); // set_selection
             assert_eq!(op, 0);
             assert_eq!(Args::new(&body).u32().unwrap(), source);
             self.done();
-            (source, interface)
+            (source, interface, device)
         }
         /// Sends a paste request and returns what the client wrote.
         fn paste(&self, source: u32, mime: &str) -> Vec<u8> {
@@ -659,7 +672,7 @@ mod tests {
             "zwlr_data_control_manager_v1",
             "ext_data_control_manager_v1",
         ]);
-        let (source, interface) = fake.setup();
+        let (source, interface, _) = fake.setup();
         assert_eq!(
             interface, b"ext_data_control_manager_v1",
             "ext preferred over wlr"
@@ -686,7 +699,7 @@ mod tests {
             input: Vec::new(),
         };
         fake.globals(&["zwlr_data_control_manager_v1"]);
-        let (source, interface) = fake.setup();
+        let (source, interface, _) = fake.setup();
         assert_eq!(interface, b"zwlr_data_control_manager_v1");
         // Only the hint was read: that is not a delivery.
         assert_eq!(fake.paste(source, HINT_MIME), b"secret");
@@ -721,9 +734,55 @@ mod tests {
             input: Vec::new(),
         };
         fake.globals(&["ext_data_control_manager_v1"]);
-        let (source, _) = fake.setup();
+        let (source, _, _) = fake.setup();
         assert_eq!(fake.request().0, source); // source.destroy at expiry
         assert_eq!(worker.join().unwrap(), Ok(()));
+    }
+
+    #[test]
+    fn wayland_clipboard_destroys_unused_offers_without_reading_them() {
+        for interface in [
+            "ext_data_control_manager_v1",
+            "zwlr_data_control_manager_v1",
+        ] {
+            let (mine, theirs) = pair();
+            let worker = client(mine, b"hunter2", Duration::from_secs(30));
+            let mut fake = Fake {
+                sock: theirs,
+                input: Vec::new(),
+            };
+            fake.globals(&[interface]);
+            let (source, _, device) = fake.setup();
+            let offer = 0xff00_0001;
+            fake.event(Msg::new(device, 0).u32(offer), None);
+            let (object, opcode, body) = fake.request();
+            assert_eq!((object, opcode, body.len()), (offer, 1, 0));
+            assert_eq!(fake.paste(source, "UTF8_STRING"), b"hunter2");
+            fake.event(Msg::new(source, 1), None);
+            assert_eq!(worker.join().unwrap(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn wayland_clipboard_pipe_stops_on_hold_expiry_or_cancellation() {
+        let (read, write) = rustix::pipe::pipe().unwrap();
+        assert!(!write_all(
+            &write,
+            b"secret",
+            Instant::now() + TRANSFER,
+            &|| true
+        ));
+        rustix::fs::fcntl_setfl(&read, rustix::fs::OFlags::NONBLOCK).unwrap();
+        assert_eq!(rustix::io::read(&read, &mut [0; 1]), Err(Errno::AGAIN));
+        // A reader that never drains must not extend a short hold by TRANSFER.
+        let start = Instant::now();
+        assert!(!write_all(
+            &write,
+            &vec![7; 2 * 1024 * 1024],
+            start + Duration::from_millis(20),
+            &|| false
+        ));
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

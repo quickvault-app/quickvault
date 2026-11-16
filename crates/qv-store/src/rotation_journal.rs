@@ -8,7 +8,7 @@
 //! with this intent and the external anchor, and obtain the necessary credentials.
 //! In particular, possession of the old VK must not authorize release of new VK.
 //!
-//! Development wire format: canonical CBOR map keys 0..=14, as enumerated by
+//! Wire format (frozen at 1.0, spec 0015 §4.11): canonical CBOR map keys 0..=14, as enumerated by
 //! [`RotationJournalBody`]. MACs occupy keys 13 and 14. Each generation MACs
 //! `["qv/rotation-journal/v1", body]`, where body is the map of keys 0..=12,
 //! using its own existing local-state purpose key and MAC/1. No keys, password

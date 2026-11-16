@@ -19,16 +19,18 @@
 //!   `mmap_size=0`, `cell_size_check`, `max_page_count`, `busy_timeout=0`.
 //! - Limits on lengths, columns, expressions, compound selects, program
 //!   size, function arguments, attachments, LIKE patterns, variables,
-//!   trigger depth and worker threads. Development values.
+//!   trigger depth and worker threads.
 //! - An execution-step budget: a progress handler interrupts any statement
-//!   once the budget for the current operation is spent.
+//!   once the budget for the current operation is spent, or, while a
+//!   cancellation check is armed (the compaction copy, 0004 §1.4), once it
+//!   reports a cancellation.
 //!
 //! No application SQL functions, collations or hooks are registered other
 //! than the progress handler.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rusqlite::config::DbConfig;
 use rusqlite::limits::Limit;
@@ -37,8 +39,7 @@ use rusqlite::{Connection, OpenFlags};
 use crate::error::{StoreError, sqlite_err};
 use crate::limits::{MAX_DB_BYTES, PAGE_SIZE};
 
-/// VM operations allowed per `open`, `create` or `unlock` (development
-/// value).
+/// VM operations allowed per `open`, `create` or `unlock`.
 pub(crate) const STEP_BUDGET: u64 = 100_000_000;
 
 /// The progress handler runs every this many VM operations.
@@ -120,31 +121,76 @@ fn int_pragmas() -> [(&'static str, &'static str, i64); 8] {
     ]
 }
 
+/// A cancellation check the progress handler can call from inside a
+/// statement: it must outlive the statement and be callable from SQLite's
+/// callback.
+pub(crate) type Interrupt = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// The shared execution-step budget of one connection.
 #[derive(Clone)]
-pub(crate) struct StepBudget(Arc<AtomicU64>);
+pub(crate) struct StepBudget(Arc<Budget>);
+
+struct Budget {
+    units: AtomicU64,
+    /// While armed, the progress handler also interrupts the running
+    /// statement once this returns `true`.
+    interrupt: Mutex<Option<Interrupt>>,
+}
+
+/// Disarms the cancellation check of [`StepBudget::interrupt_when`] on drop.
+pub(crate) struct Armed(StepBudget);
+
+impl Drop for Armed {
+    fn drop(&mut self) {
+        *self.0.slot() = None;
+    }
+}
 
 impl StepBudget {
     pub(crate) fn new() -> Self {
-        Self(Arc::new(AtomicU64::new(STEP_BUDGET / STEP_GRANULARITY)))
+        Self(Arc::new(Budget {
+            units: AtomicU64::new(STEP_BUDGET / STEP_GRANULARITY),
+            interrupt: Mutex::new(None),
+        }))
     }
 
     /// Starts a new operation with the full budget.
     pub(crate) fn reset(&self) {
         self.0
+            .units
             .store(STEP_BUDGET / STEP_GRANULARITY, Ordering::Relaxed);
     }
 
-    /// Spends one unit; `true` once the budget is exhausted.
-    fn spend(&self) -> bool {
+    /// Until the returned guard is dropped, statements on this connection
+    /// are also interrupted once `cancelled` returns `true` (checked every
+    /// [`STEP_GRANULARITY`] VM operations). The interrupted statement fails
+    /// with `SQLITE_INTERRUPT`; the caller then reports the cancellation.
+    pub(crate) fn interrupt_when(&self, cancelled: Interrupt) -> Armed {
+        *self.slot() = Some(cancelled);
+        Armed(self.clone())
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Interrupt>> {
         self.0
+            .interrupt
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Spends one unit; `true` (interrupt) once the budget is exhausted or
+    /// an armed cancellation check reports a cancellation.
+    fn spend(&self) -> bool {
+        let exhausted = self
+            .0
+            .units
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |b| b.checked_sub(1))
-            .is_err()
+            .is_err();
+        exhausted || self.slot().as_ref().is_some_and(|cancelled| cancelled())
     }
 
     #[cfg(test)]
     pub(crate) fn set_units(&self, units: u64) {
-        self.0.store(units, Ordering::Relaxed);
+        self.0.units.store(units, Ordering::Relaxed);
     }
 }
 
@@ -510,6 +556,27 @@ mod tests {
         budget.reset();
         let n: i64 = conn.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn sqlite_armed_cancellation_interrupts_until_disarmed() {
+        let d = TestDir::new();
+        let (conn, budget) = fresh(&d);
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = Arc::clone(&calls);
+        let count = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 100000) SELECT count(*) FROM c";
+        let armed =
+            budget.interrupt_when(Arc::new(move || seen.fetch_add(1, Ordering::SeqCst) >= 3));
+        let r = conn.query_row(count, [], |r| r.get::<_, i64>(0));
+        assert_eq!(
+            r.map_err(|e| sqlite_err(&e)),
+            Err(StoreError::LimitExceeded)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        drop(armed);
+        let n: i64 = conn.query_row(count, [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 100_000);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
     }
 
     #[test]

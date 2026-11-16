@@ -102,6 +102,60 @@ fn lan_staging_builds_an_identical_vault_with_no_peer_state() {
     assert_eq!(err(create(&u, again, &path, &anchors)), StoreError::Exists);
 }
 
+// 0012 §1: Budget inconsistency
+#[test]
+fn lan_staging_progress_counts_only_successful_peer_objects() {
+    let (d, _a, u, _) = crate::verify_tests::setup();
+    let state = u.lan_serve_state().unwrap();
+    let h = u.header();
+    let mut i = 0usize;
+    let scope = crate::lan_staging::StagingScope {
+        vault: h.vault_id,
+        generation: h.key_generation,
+        minimum: (h.min_data_profile, h.min_derivation_profile),
+    };
+    let mut s = LanStaging::start(
+        &private(&d),
+        u.vault_key(),
+        &scope,
+        state.manifest_hash(),
+        state.envelope(),
+        &mut |_| {
+            i += 1;
+            Ok(if i.is_multiple_of(2) {
+                crate::Planned::Local
+            } else {
+                crate::Planned::Peer
+            })
+        },
+        &|| false,
+    )
+    .unwrap();
+    let expected: u64 = s
+        .plan()
+        .iter()
+        .filter(|(_, p)| *p == crate::Planned::Peer)
+        .map(|(id, _)| u.manifest().reference(*id).unwrap().length())
+        .sum();
+    assert_eq!(s.peer_bytes(), (0, expected));
+    let mut done = 0;
+    for (id, source) in s.plan().to_vec() {
+        let bytes = u.lan_object_envelope(&state, id).unwrap();
+        let mut bad = bytes.clone();
+        let n = bad.len() - 1;
+        bad[n] ^= 1;
+        assert!(s.append(&bad, source).is_err());
+        assert_eq!(s.peer_bytes(), (done, expected));
+        s.append(&bytes, source).unwrap();
+        if source == crate::Planned::Peer {
+            done += u.manifest().reference(id).unwrap().length();
+        }
+        assert_eq!(s.peer_bytes(), (done, expected));
+    }
+    assert_eq!(done, expected);
+    s.finish(u.vault_key(), &|| false).unwrap();
+}
+
 #[test]
 fn lan_staging_refuses_bad_manifests_before_staging() {
     let (d, _a, u, _record) = crate::verify_tests::setup();

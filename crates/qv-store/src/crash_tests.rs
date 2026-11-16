@@ -101,6 +101,182 @@ fn crash_every_mutation_point() {
     }
 }
 
+/// What one state of the file is: its head, schema, snapshots and rows.
+#[derive(Debug, PartialEq, Eq)]
+struct Shape {
+    seq: u64,
+    head: crate::head::LocalHead,
+    schema: u32,
+    snapshots: Vec<crate::SnapshotRow>,
+    objects: i64,
+    manifests: i64,
+    records: usize,
+}
+
+fn shape(u: &UnlockedVault) -> Shape {
+    let count = |table: &str| crate::snapshot_tests::rows(u, table);
+    Shape {
+        seq: u.local_seq(),
+        head: u.state.head.clone(),
+        schema: u.file.schema_version(),
+        snapshots: u.snapshot_rows().to_vec(),
+        objects: count("object"),
+        manifests: count("manifest"),
+        records: u.manifest().records().len(),
+    }
+}
+
+/// A commit with snapshot work (review of plan 0059, finding 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnapshotCommit {
+    /// Keeps the replaced manifest as a snapshot.
+    Keep,
+    /// Asks nothing of the snapshots but prunes the one kept for room.
+    Prune,
+    /// Keeps the first snapshot of a `0x7FFF0004` file, upgrading it.
+    Upgrade,
+}
+
+// 0012 §1: Anchor crash windows
+#[test]
+fn crash_every_snapshot_commit_point() {
+    use crate::snapshot_tests::{DAY, Room, budgets, live_bytes, make_v4, room_for, tombstone};
+    use crate::{SnapshotKind, schema};
+    use CrashPoint::*;
+    use SnapshotCommit::*;
+    use qv_model::Timestamp;
+    let cases = [
+        (Begun, false, AnchorStatus::Verified),
+        (ObjectsWritten, false, AnchorStatus::Verified),
+        (ManifestWritten, false, AnchorStatus::Verified),
+        (HeadWritten, false, AnchorStatus::Verified),
+        (Pruned, false, AnchorStatus::Verified),
+        (Committed, true, AnchorStatus::Advanced),
+        (AnchorTempWritten, true, AnchorStatus::Advanced),
+        (AnchorReplaced, true, AnchorStatus::Verified),
+    ];
+    let v4 = u32::try_from(schema::SCHEMA_V4).unwrap();
+    let v5 = u32::try_from(schema::SCHEMA_VERSION).unwrap();
+    for kind in [Keep, Prune, Upgrade] {
+        for (point, new_state, expected) in cases {
+            let at = format!("{kind:?} {point:?}");
+            let (d, a, s) = (TestDir::new(), TestDir::new(), TestDir::new());
+            let (p, dir) = copy_fixture(&d, &a, "v.qvault");
+            let (r, other) = (new_record(), new_record());
+            let new;
+            {
+                let mut u = unlock(&p, &dir, PASSWORD).unwrap();
+                if kind == Upgrade {
+                    make_v4(&mut u);
+                }
+                edit(&mut u, r, "before");
+                let mut room = None;
+                if kind == Prune {
+                    tombstone(&mut u, r, |w| {
+                        w.keep_snapshot(SnapshotKind::Ordinary, Timestamp(1_000), budgets());
+                    });
+                    let held = u.file_space().unwrap().snapshot_bytes;
+                    assert!(held > 0);
+                    // As in `snapshot_room_prunes_in_any_commit_and_skips_before_pruning`:
+                    // the next edit of `other` fits, its snapshot does not.
+                    let before = live_bytes(&u);
+                    edit(&mut u, other, "anything");
+                    let delta = live_bytes(&u) - before;
+                    room = Some(Room::set(room_for(live_bytes(&u) + delta + held / 2)));
+                }
+                let _ = u.take_snapshot_outcome();
+                let old = shape(&u);
+                let snapshot_only: Vec<_> = u
+                    .state
+                    .snapshots
+                    .as_ref()
+                    .map(|index| {
+                        index
+                            .retained()
+                            .iter()
+                            .copied()
+                            .filter(|id| u.manifest().reference(*id).is_none())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                assert_eq!(old.schema, if kind == Upgrade { v4 } else { v5 });
+                assert_eq!(old.snapshots.len(), usize::from(kind == Prune));
+                arm(point, &p, &a.join("anchors"), s.path());
+                let target = if kind == Prune { other } else { r };
+                let result = (|| {
+                    let root = u.manifest().root_group_id();
+                    let mut w = u.write()?;
+                    if kind != Prune {
+                        w.keep_snapshot(SnapshotKind::Ordinary, Timestamp(2 * DAY), budgets());
+                    }
+                    let c = w.reserve_counter()?;
+                    let heads = w.head_clocks(target);
+                    w.put_local(
+                        target,
+                        entry_version(root, "anything", w.writer_id(), c, &heads),
+                    )?;
+                    w.commit()
+                })();
+                drop(room);
+                assert_eq!(
+                    result,
+                    Err(if new_state {
+                        StoreError::CommittedAnchorPending
+                    } else {
+                        StoreError::Internal
+                    }),
+                    "{at}"
+                );
+                assert!(!disarm(), "{at} was not reached");
+                new = shape(&u);
+                if new_state {
+                    let outcome = u.take_snapshot_outcome().unwrap();
+                    assert_eq!(new.seq, old.seq + 1, "{at}");
+                    assert_eq!(new.schema, v5, "{at}");
+                    if kind == Prune {
+                        assert_eq!(outcome.removed, old.snapshots, "{at}");
+                        assert!(outcome.kept.is_none() && new.snapshots.is_empty(), "{at}");
+                        assert!(new.manifests == 1, "{at}");
+                        assert!(!snapshot_only.is_empty(), "{at}");
+                        for id in &snapshot_only {
+                            let count: i64 = u
+                                .file
+                                .conn
+                                .query_row(
+                                    "SELECT count(*) FROM object WHERE object_id = ?1",
+                                    [id.to_bytes().as_slice()],
+                                    |r| r.get(0),
+                                )
+                                .unwrap();
+                            assert_eq!(count, 0, "pruned snapshot object still present: {at}");
+                        }
+                    } else {
+                        let kept = outcome.kept.unwrap();
+                        assert_eq!(new.snapshots, vec![kept], "{at}");
+                        assert_eq!(kept.manifest_hash, old.head.manifest_hash, "{at}");
+                        assert_eq!(new.manifests, 2, "{at}");
+                    }
+                } else {
+                    // The failed commit left the session as it was.
+                    assert_eq!(new, old, "{at}");
+                }
+            }
+            let journal = s.join("v.qvault-journal").exists();
+            assert_eq!(journal, !new_state && point != Begun, "{at}");
+            // The copy opens to exactly one of the two states: head, index,
+            // schema and rows together, and it verifies.
+            let (u, status) = open_snapshot(&s, "v.qvault").unwrap();
+            assert_eq!(status, expected, "{at}");
+            assert_eq!(shape(&u), new, "{at}");
+            u.verify_all(&|| false).unwrap();
+            drop(u);
+            let dir = AnchorDir::open(&s.join("anchors")).unwrap();
+            let u = unlock(&s.join("v.qvault"), &dir, PASSWORD).unwrap();
+            assert_eq!(shape(&u), new, "{at}");
+        }
+    }
+}
+
 // 0012 §1: Rotation/purge ambiguity
 #[test]
 fn history_purge_crash_boundaries_preserve_heads_and_atomic_floor() {

@@ -32,13 +32,13 @@ use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE,
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, FileDispositionInfo,
-    FileDispositionInfoEx, FileIdInfo, GetDiskFreeSpaceExW, GetDriveTypeW,
-    GetFileInformationByHandle, GetFileInformationByHandleEx, GetFileType, GetVolumePathNameW,
-    LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, MOVEFILE_REPLACE_EXISTING,
-    MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SetFileInformationByHandle, UnlockFileEx,
-    WRITE_DAC,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
+    FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_TYPE_DISK, FileDispositionInfo, FileDispositionInfoEx, FileIdInfo,
+    FileRenameInfoEx, GetDiskFreeSpaceExW, GetDriveTypeW, GetFileInformationByHandle,
+    GetFileInformationByHandleEx, GetFileType, GetVolumePathNameW, LOCKFILE_EXCLUSIVE_LOCK,
+    LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    MoveFileExW, READ_CONTROL, SetFileInformationByHandle, UnlockFileEx, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -252,6 +252,61 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
 /// copy, 0004 §1.4), write-through.
 pub fn rename_replace(from: &Path, to: &Path) -> io::Result<()> {
     move_file(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+}
+
+/// Replaces a regular file while both files' process-lock handles stay open.
+/// Requires Windows POSIX rename support; never releases locks as a fallback.
+/// The caller must close handles that do not share delete (notably SQLite).
+pub fn rename_replace_open(from: &Path, to: &Path) -> io::Result<()> {
+    // FileRenameInfoEx flags, documented in FILE_RENAME_INFORMATION. These
+    // constants are absent from our pinned Win32 (rather than WDK) bindings.
+    const REPLACE_IF_EXISTS: u32 = 1;
+    const POSIX_SEMANTICS: u32 = 2;
+    let file = OpenOptions::new()
+        .access_mode(DELETE | GENERIC_WRITE | FILE_READ_ATTRIBUTES)
+        .share_mode(SHARE_ALL)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
+        .open(from)?;
+    if kind_of(&file)? != Kind::File {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let name = wide(std::path::absolute(to)?.as_os_str())?;
+    let name_bytes = (name.len() - 1)
+        .checked_mul(size_of::<u16>())
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    let offset = core::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let bytes = offset
+        .checked_add(
+            name.len()
+                .checked_mul(size_of::<u16>())
+                .ok_or(io::ErrorKind::InvalidInput)?,
+        )
+        .ok_or(io::ErrorKind::InvalidInput)?
+        .max(size_of::<FILE_RENAME_INFO>());
+    let length = u32::try_from(bytes).map_err(|_| io::ErrorKind::InvalidInput)?;
+    // usize storage supplies the pointer alignment required by the C layout;
+    // all bytes (including padding and the variable-length tail) start zero.
+    let mut storage = vec![0usize; bytes.div_ceil(size_of::<usize>())];
+    let raw = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: storage is aligned, initialized and at least the struct's size.
+    let info = unsafe { &mut *raw };
+    info.Anonymous.Flags = REPLACE_IF_EXISTS | POSIX_SEMANTICS;
+    info.FileNameLength = name_bytes;
+    // SAFETY: offset points to the UTF-16-aligned FileName field in storage.
+    let tail = unsafe { storage.as_mut_ptr().cast::<u8>().add(offset) }.cast::<u16>();
+    // SAFETY: distinct live allocations; storage includes room for all name
+    // units and the terminator, checked above. No reference to info is used.
+    unsafe { std::ptr::copy_nonoverlapping(name.as_ptr(), tail, name.len()) };
+    // SAFETY: live DELETE-capable handle; initialized FILE_RENAME_INFO buffer
+    // with exactly the checked tail length. Windows does not retain it.
+    if unsafe {
+        SetFileInformationByHandle(file.as_raw_handle(), FileRenameInfoEx, raw.cast(), length)
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    file.sync_all()
 }
 
 /// Removes the file or empty directory at `path` itself (never through a
@@ -721,6 +776,29 @@ mod tests {
         assert!(std::fs::read_dir(&d.0).unwrap().next().is_none());
         drop(held);
         assert!(remove_nofollow(&b).is_err());
+    }
+
+    #[test]
+    fn replacement_keeps_both_locked_file_handles_valid() {
+        let d = Dir::new();
+        let (old_path, copy_path) = (d.0.join("old"), d.0.join("copy"));
+        let mut old = create_private_file(&old_path).unwrap();
+        let mut copy = create_private_file(&copy_path).unwrap();
+        old.write_all(b"old").unwrap();
+        copy.write_all(b"copy").unwrap();
+        copy.sync_all().unwrap();
+        assert!(try_lock(&old, true).unwrap());
+        assert!(try_lock(&copy, true).unwrap());
+        let old_id = file_id(&old).unwrap();
+        let copy_id = file_id(&copy).unwrap();
+        rename_replace_open(&copy_path, &old_path).unwrap();
+        assert!(!copy_path.exists());
+        assert_eq!(file_id(&old).unwrap(), old_id);
+        assert_eq!(old.metadata().unwrap().len(), 3);
+        let current = open_nofollow(&old_path, Access::Read).unwrap();
+        assert_eq!(file_id(&current).unwrap(), copy_id);
+        assert_eq!(current.metadata().unwrap().len(), 4);
+        assert!(!try_lock(&current, true).unwrap());
     }
 
     #[test]

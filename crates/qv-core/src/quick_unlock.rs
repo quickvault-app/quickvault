@@ -33,6 +33,18 @@ pub enum QuickFailure {
     OtherVault,
     /// The vault file's header could not be read when checked.
     Unreadable,
+    /// Reading the vault failed for a passing reason after the key was
+    /// released: an I/O error, full storage or a busy vault file. The
+    /// enrollment is kept (plan 0063 review finding 4).
+    Storage,
+}
+
+/// Errors that say nothing about the released key: the enrollment stays.
+fn transient(e: &CoreError) -> bool {
+    matches!(
+        e,
+        CoreError::Store(StoreError::Io | StoreError::StorageCapacity | StoreError::Locked)
+    )
 }
 fn binding(ctx: &crate::session::Ctx<'_>) -> Result<QuickBinding, CoreError> {
     let header = ctx.open.vault.header();
@@ -203,7 +215,10 @@ impl Core {
                 false,
             )?;
             step = QuickFailure::Binding;
-            if session.read(|ctx| binding(ctx))? != expected || cancelled() {
+            if cancelled() {
+                return Err(CoreError::Cancelled);
+            }
+            if session.read(|ctx| binding(ctx))? != expected {
                 return Err(CoreError::NotAllowed);
             }
             step = QuickFailure::Platform;
@@ -211,15 +226,23 @@ impl Core {
             session.run_automatic_snapshot(cancel);
             Ok(session)
         })();
-        // The phrase did not open this vault as bound: the state is stale.
-        if result
-            .as_ref()
-            .is_err_and(|e| !matches!(e, CoreError::Cancelled))
-        {
-            self.note_quick(Some(step));
-            let _ = services.keystore().invalidate();
+        match result {
+            // A store failure after cancellation is the cancellation.
+            Err(CoreError::Store(StoreError::Io)) if cancelled() => Err(CoreError::Cancelled),
+            Err(CoreError::Cancelled) => Err(CoreError::Cancelled),
+            // A passing storage failure says nothing about the key.
+            Err(e) if transient(&e) => {
+                self.note_quick(Some(QuickFailure::Storage));
+                Err(e)
+            }
+            // The phrase did not open this vault as bound: the state is stale.
+            Err(e) => {
+                self.note_quick(Some(step));
+                let _ = services.keystore().invalidate();
+                Err(e)
+            }
+            Ok(session) => Ok(session),
         }
-        result
     }
 }
 fn same_vault(path: &Path, binding: QuickBinding) -> bool {
@@ -351,6 +374,7 @@ mod tests {
         outside.lock();
         assert!(core.quick_ready());
         assert!(core.unlock_quick(&env.path, None).is_err());
+        assert_eq!(core.quick_failure(), Some(QuickFailure::Binding));
         assert!(!core.quick_ready());
         let session = core.unlock(&env.path, &new, None).unwrap();
         session
@@ -361,6 +385,7 @@ mod tests {
             std::fs::remove_file(item.unwrap().path()).unwrap();
         }
         assert!(core.unlock_quick(&env.path, None).is_err());
+        assert_eq!(core.quick_failure(), Some(QuickFailure::Anchor));
         assert!(!core.quick_ready());
     }
 
@@ -427,6 +452,7 @@ mod tests {
             core.unlock_quick(&other, None),
             Err(CoreError::NotAllowed)
         ));
+        assert_eq!(core.quick_failure(), Some(QuickFailure::OtherVault));
         assert!(core.quick_ready_for(&env.path));
         backend.0.store(false, Ordering::SeqCst);
         assert!(
@@ -436,5 +462,159 @@ mod tests {
                 .unwrap()
                 .ok()
         );
+    }
+
+    /// What [`Scripted`] does when the key is released.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Release {
+        /// Return the sealed phrase.
+        Phrase,
+        /// Return bytes that are no phrase of this vault.
+        Wrong,
+        /// Hold the vault file open elsewhere, then return the phrase.
+        Busy,
+        /// Cancel the caller's token, then return the phrase.
+        Cancel,
+    }
+
+    /// A synthetic backend whose release step is chosen by the test.
+    struct Scripted {
+        release: std::sync::Mutex<Release>,
+        path: std::path::PathBuf,
+        held: std::sync::Mutex<Option<qv_store::VaultFile>>,
+        token: CancelToken,
+    }
+    impl Scripted {
+        fn set(&self, r: Release) {
+            *self.release.lock().unwrap() = r;
+        }
+    }
+    impl AndroidKeystoreBackend for Scripted {
+        fn validated(&self) -> bool {
+            true
+        }
+        fn seal(
+            &self,
+            b: QuickBinding,
+            p: QuickPolicy,
+            s: &SecretBytes,
+            c: qv_platform::Cancellation,
+        ) -> Result<SecretBytes, PlatformError> {
+            Native.seal(b, p, s, c)
+        }
+        fn open(
+            &self,
+            b: QuickBinding,
+            p: QuickPolicy,
+            s: &SecretBytes,
+            c: qv_platform::Cancellation,
+        ) -> Result<SecretBytes, PlatformError> {
+            match *self.release.lock().unwrap() {
+                Release::Phrase => {}
+                Release::Wrong => {
+                    return SecretBytes::try_init(23, |b| {
+                        b.copy_from_slice(b"not this vault's phrase");
+                        Ok(())
+                    });
+                }
+                Release::Busy => {
+                    *self.held.lock().unwrap() =
+                        Some(qv_store::VaultFile::open(&self.path).unwrap());
+                }
+                Release::Cancel => self.token.cancel(),
+            }
+            Native.open(b, p, s, c)
+        }
+        fn delete(&self, _: &SecretBytes) -> Result<(), PlatformError> {
+            Ok(())
+        }
+    }
+
+    /// Plan 0063 review finding 4: each refusing step is named, and only
+    /// failures that say the key is stale end the enrollment.
+    // 0012 §1: Hardware assumptions
+    #[test]
+    fn quick_failure_names_the_refusing_step() {
+        let env = Env::new();
+        let _k = kdf();
+        let backend = Arc::new(Scripted {
+            release: std::sync::Mutex::new(Release::Phrase),
+            path: env.path.clone(),
+            held: std::sync::Mutex::new(None),
+            token: CancelToken::new(),
+        });
+        let services = Arc::new(Platform(AndroidKeystore::new(backend.clone())));
+        let core = env.core().with_linux_platform(services, true);
+
+        // Nothing enrolled yet.
+        assert!(matches!(
+            core.unlock_quick(&env.path, None),
+            Err(CoreError::NotAllowed)
+        ));
+        assert_eq!(core.quick_failure(), Some(QuickFailure::NotEnrolled));
+        let enroll = || {
+            let s = core.unlock(&env.path, &pw(PASSWORD), None).unwrap();
+            s.enroll_quick(&pw(PASSWORD), QuickPolicy::Class3, None)
+                .unwrap();
+            s.lock();
+        };
+        enroll();
+
+        // A busy vault file is a passing storage failure: kept.
+        backend.set(Release::Busy);
+        assert!(matches!(
+            core.unlock_quick(&env.path, None),
+            Err(CoreError::Store(StoreError::Locked))
+        ));
+        assert_eq!(core.quick_failure(), Some(QuickFailure::Storage));
+        drop(backend.held.lock().unwrap().take());
+        assert!(core.quick_ready_for(&env.path));
+
+        // A cancellation after the release is neither a failure nor stale.
+        backend.set(Release::Cancel);
+        assert!(matches!(
+            core.unlock_quick(&env.path, Some(&backend.token)),
+            Err(CoreError::Cancelled)
+        ));
+        assert_eq!(core.quick_failure(), None);
+        assert!(core.quick_ready_for(&env.path));
+
+        // The released key does not open the vault: stale, ended.
+        backend.set(Release::Wrong);
+        assert!(core.unlock_quick(&env.path, None).is_err());
+        assert_eq!(core.quick_failure(), Some(QuickFailure::Open));
+        assert!(!core.quick_ready());
+
+        // Enrolled again, it works and clears the reason.
+        backend.set(Release::Phrase);
+        enroll();
+        assert!(
+            core.unlock_quick(&env.path, None)
+                .unwrap()
+                .verify(None)
+                .unwrap()
+                .ok()
+        );
+        assert_eq!(core.quick_failure(), None);
+    }
+
+    #[test]
+    fn quick_transient_errors_are_storage_only() {
+        for e in [
+            StoreError::Io,
+            StoreError::StorageCapacity,
+            StoreError::Locked,
+        ] {
+            assert!(transient(&CoreError::Store(e)));
+        }
+        for e in [
+            CoreError::Store(StoreError::WrongPhrase),
+            CoreError::Store(StoreError::Integrity),
+            CoreError::Store(StoreError::Rollback),
+            CoreError::NotAllowed,
+            CoreError::Cancelled,
+        ] {
+            assert!(!transient(&e));
+        }
     }
 }

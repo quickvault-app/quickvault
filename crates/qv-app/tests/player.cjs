@@ -30,7 +30,8 @@ function fixture(){
         play(){this.played++;this.paused=false;this.ended=false;return Promise.resolve();}
     }
     const document={hidden:false,activeElement:null,addEventListener(k,fn){if(!listeners.has(k))listeners.set(k,[]);listeners.get(k).push(fn);}};
-    const context=vm.createContext({document,window:{},Element,HTMLMediaElement:Media,HTMLImageElement:class extends Element{},HTMLVideoElement:class extends Media{},AbortController,Uint8Array,Blob,
+    const context=vm.createContext({document,window:{},Element,HTMLMediaElement:Media,HTMLAudioElement:Media,HTMLImageElement:class extends Element{},HTMLVideoElement:class extends Media{},AbortController,Uint8Array,Blob,
+        matchMedia(){return {matches:false};},
         URL:{createObjectURL(blob){urls.push(blob);return `blob:synthetic-${urls.length}`;},revokeObjectURL(url){revoked.push(url);}},
         fetch(url,options){return new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}));},
         requestAnimationFrame(){return 1;},setTimeout,clearTimeout});

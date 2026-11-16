@@ -1,0 +1,5 @@
+# The worst-case manifest at the 1.0 budgets (0004 §4.2; spec 0015 §6, plan 0064).
+# Built by worst_case() in crates/qv-store/src/manifest.rs from fixed IDs. Never regenerate.
+plaintext_length 62070890
+sealed_length 62914576
+sha256 6f74c0f656032c3c7e2fe76e34bebd11358df27e43b89e851283e9b38f562265

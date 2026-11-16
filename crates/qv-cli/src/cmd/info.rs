@@ -40,11 +40,7 @@ pub(crate) fn run(ctx: &Ctx, m: &ArgMatches) -> Result<(), CliError> {
 fn human(o: &mut Out, i: &VaultInfo, overview: Option<&Overview>) {
     o.raw("Vault header (unverified: not authenticated without the password)\n");
     o.raw(&format!("  vault id:        {}\n", i.vault_id));
-    o.raw(&format!("  format:          {:#010x}", i.schema_version));
-    if i.schema_version >> 16 == 0x7fff {
-        o.raw(" (development; no compatibility promise)");
-    }
-    o.raw("\n");
+    o.raw(&format!("  format:          {:#010x}\n", i.schema_version));
     o.raw(&format!("  key generation:  {}\n", i.key_generation));
     o.raw(&format!(
         "  profiles:        stored-data {}, derivation {}, MAC {} (minimum stored-data {}, derivation {})\n",

@@ -678,6 +678,13 @@ impl Write<'_> {
         self.links = Some(rows);
     }
 
+    /// Test only: the connection this write runs on, so a test can fill
+    /// the volume after the objects are staged (0012 "Snapshot disk growth").
+    #[cfg(test)]
+    pub(crate) fn conn(&self) -> &rusqlite::Connection {
+        &self.vault.file.conn
+    }
+
     /// Commits the mutation (steps 3–8 of the module docs).
     pub fn commit(self) -> Result<(), StoreError> {
         self.commit_cancellable(&|| false)

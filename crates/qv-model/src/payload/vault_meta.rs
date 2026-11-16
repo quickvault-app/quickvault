@@ -12,8 +12,8 @@
 //! Settings: 0 `history_depth` (uint, optional, default 10, 0007 §1.1),
 //! 1 `trash_retention_days` (uint, optional, default 30, 0007 §2.1),
 //! 2 `generator` (map, optional; the password generator defaults, 0010 §5.1),
-//! 3 `recovery_skipped_at` (uint ms, optional; when the recovery-phrase
-//! confirmation was explicitly skipped, 0002 §4.2; development value).
+//! 3 `recovery_skipped_at` (int ms, optional; when the recovery-phrase
+//! confirmation was explicitly skipped, 0002 §4.2).
 //!
 //! A known settings field replaces an unknown value kept at its key: a new
 //! `generator` drops the unreadable key-2 value in [`Settings::ext`] instead

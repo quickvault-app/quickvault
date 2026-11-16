@@ -13,6 +13,12 @@
 //! compaction.
 
 use std::path::Path;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::time::Duration;
 
 use rusqlite::Connection;
 use rusqlite::limits::Limit;
@@ -35,7 +41,9 @@ pub struct Compaction {
 thread_local! {
     /// Test hook: 1 stops (as a crash would) after the verified copy exists,
     /// before the move; 2 stops right after the move; 3 changes the copy
-    /// before it is verified.
+    /// before it is verified; 4 interrupts the running copy; 5 changes one
+    /// ciphertext byte without changing its length; 6 checks Windows
+    /// exclusion after SQLite closes but while both file locks remain held.
     pub(crate) static FAULT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
@@ -77,18 +85,34 @@ impl UnlockedVault {
         }
         fs::remove_stale_temps(&path)?;
         let (lock, temp) = fs::create_temp(&path)?;
-        let result = self.write_copy(&temp).and_then(|()| {
-            lock.sync()?;
-            #[cfg(test)]
-            if fault(3) {
-                let c = Connection::open(&temp).map_err(|e| sqlite_err(&e))?;
-                c.execute("UPDATE replica SET next_counter = next_counter + 1", [])
-                    .map_err(|e| sqlite_err(&e))?;
-            }
-            let copy = VaultFile::open_locked(&temp, lock)?;
-            self.check_copy(&copy)?;
-            Ok(copy)
-        });
+        let result =
+            self.write_copy_cancellable(&temp, cancelled)
+                .and_then(|()| {
+                    lock.sync()?;
+                    #[cfg(test)]
+                    if fault(3) {
+                        let c = Connection::open(&temp).map_err(|e| sqlite_err(&e))?;
+                        c.execute("UPDATE replica SET next_counter = next_counter + 1", [])
+                            .map_err(|e| sqlite_err(&e))?;
+                    }
+                    #[cfg(test)]
+                    if fault(5) {
+                        let c = Connection::open(&temp).map_err(|e| sqlite_err(&e))?;
+                        let (id, mut ct): (Vec<u8>, Vec<u8>) = c.query_row(
+                    "SELECT object_id, ciphertext FROM object ORDER BY object_id LIMIT 1", [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                ).map_err(|e| sqlite_err(&e))?;
+                        ct[0] ^= 1;
+                        c.execute(
+                            "UPDATE object SET ciphertext = ?1 WHERE object_id = ?2",
+                            rusqlite::params![ct, id],
+                        )
+                        .map_err(|e| sqlite_err(&e))?;
+                    }
+                    let copy = VaultFile::open_locked(&temp, lock)?;
+                    self.check_copy(&copy, cancelled)?;
+                    Ok(copy)
+                });
         let copy = match result {
             Ok(copy) => copy,
             Err(e) => {
@@ -110,15 +134,71 @@ impl UnlockedVault {
         Ok(Some(Compaction { before, after }))
     }
 
+    /// SQLite requires a 'static progress callback. The caller keeps polling
+    /// its borrowed cancellation check while a scoped worker runs the copy;
+    /// only an atomic flag crosses into the callback. Joining the worker and
+    /// disarming the callback precede every return, including interruption.
+    fn write_copy_cancellable(
+        &mut self,
+        temp: &Path,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), StoreError> {
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&interrupted);
+        #[cfg(test)]
+        let force = fault(4);
+        let armed = self.file.budget.interrupt_when(Arc::new(move || {
+            #[cfg(test)]
+            if force {
+                return true;
+            }
+            signal.load(Ordering::SeqCst)
+        }));
+        let result = std::thread::scope(|scope| {
+            let (send, receive) = mpsc::sync_channel(1);
+            let worker = std::thread::Builder::new()
+                .name("qv-compact".into())
+                .spawn_scoped(scope, move || {
+                    let _ = send.send(self.write_copy(temp));
+                })
+                .map_err(crate::error::io_err)?;
+            let result = loop {
+                if cancelled() {
+                    interrupted.store(true, Ordering::SeqCst);
+                }
+                match receive.recv_timeout(Duration::from_millis(5)) {
+                    Ok(result) => break result,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break Err(StoreError::Io),
+                }
+            };
+            worker.join().map_err(|_| StoreError::Internal)?;
+            result
+        });
+        drop(armed);
+        if cancelled() || interrupted.load(Ordering::SeqCst) {
+            return Err(StoreError::Io);
+        }
+        result
+    }
+
     /// `VACUUM INTO` the empty temporary file, with the attached-database
     /// limit at 1 for that statement only.
     fn write_copy(&mut self, temp: &Path) -> Result<(), StoreError> {
-        let target = temp.to_str().ok_or(StoreError::Unsupported)?;
+        // SQLite filenames use platform bytes on Unix. Bind as a BLOB and
+        // explicitly cast to TEXT to preserve non-UTF8 private paths.
+        #[cfg(unix)]
+        let target = {
+            use std::os::unix::ffi::OsStrExt;
+            temp.as_os_str().as_bytes()
+        };
+        #[cfg(not(unix))]
+        let target = temp.to_str().ok_or(StoreError::Unsupported)?.as_bytes();
         let conn = &self.file.conn;
         self.file.budget.reset();
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 1)
             .map_err(|e| sqlite_err(&e))?;
-        let vacuumed = conn.execute("VACUUM INTO ?1", [target]);
+        let vacuumed = conn.execute("VACUUM INTO CAST(?1 AS TEXT)", [target]);
         let restored = conn
             .set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)
             .and_then(|_| conn.limit(Limit::SQLITE_LIMIT_ATTACHED));
@@ -132,8 +212,8 @@ impl UnlockedVault {
     }
 
     /// The copy holds exactly this vault's control rows and every stored
-    /// object and manifest row at its stored length.
-    fn check_copy(&self, copy: &VaultFile) -> Result<(), StoreError> {
+    /// object and manifest row, including the complete ciphertext.
+    fn check_copy(&self, copy: &VaultFile, cancelled: &dyn Fn() -> bool) -> Result<(), StoreError> {
         if copy.header_body != self.file.header_body
             || copy.header_mac.as_bytes() != self.file.header_mac.as_bytes()
         {
@@ -143,47 +223,51 @@ impl UnlockedVault {
         copy.budget.reset();
         let (a, b) = (&self.file.conn, &copy.conn);
         for sql in CONTROL_ROWS {
-            same_rows(a, b, sql)?;
+            same_rows(a, b, sql, cancelled)?;
         }
         if has_index(a)? != has_index(b)? {
             return Err(StoreError::Integrity);
         }
         if has_index(a)? {
-            same_rows(a, b, "SELECT sealed FROM snapshot_index")?;
+            same_rows(a, b, "SELECT sealed FROM snapshot_index", cancelled)?;
         }
         same_rows(
             a,
             b,
-            "SELECT key_generation, object_id, data_profile, nonce, octet_length(ciphertext) \
+            "SELECT key_generation, object_id, data_profile, nonce, ciphertext \
              FROM object ORDER BY key_generation, object_id",
+            cancelled,
         )?;
         same_rows(
             a,
             b,
-            "SELECT manifest_hash, key_generation, data_profile, nonce, octet_length(ciphertext) \
+            "SELECT manifest_hash, key_generation, data_profile, nonce, ciphertext \
              FROM manifest ORDER BY manifest_hash",
+            cancelled,
         )?;
-        let live = "SELECT ciphertext FROM manifest WHERE manifest_hash = ?1";
-        let hash = self.state.head.manifest_hash;
-        let read = |c: &Connection| -> Result<Vec<u8>, StoreError> {
-            c.query_row(live, [hash.as_slice()], |r| r.get(0))
-                .map_err(|e| sqlite_err(&e))
-        };
-        if read(a)? != read(b)? {
-            return Err(StoreError::Integrity);
-        }
         Ok(())
     }
 
     /// Moves the verified copy over the vault and reopens the session there.
     /// Both locks are held across the move, so no other process can open
     /// either file in between.
-    #[cfg(not(windows))]
     fn install(&mut self, temp: &Path, path: &Path, copy: VaultFile) -> Result<(), StoreError> {
         self.check_identity()?;
         let lock = copy.into_lock()?;
         lock.same_as_path(temp)?;
+        #[cfg(windows)]
+        self.file.close_connection()?;
+        #[cfg(all(test, windows))]
+        if fault(6) {
+            // SQLite is closed, but the source lease still excludes another
+            // opener. This was the old unlocked Windows replacement interval.
+            assert_eq!(VaultFile::open(path).err(), Some(StoreError::Locked));
+        }
         if let Err(e) = fs::replace_vault(temp, path) {
+            #[cfg(windows)]
+            if self.file.reopen().is_err() {
+                self.gate = WriteGate::Blocked(StoreError::Replaced);
+            }
             drop(lock);
             discard(temp);
             return Err(e);
@@ -217,33 +301,6 @@ impl UnlockedVault {
             }
         }
     }
-
-    /// Windows refuses to replace a file that is open (plan 0052): the
-    /// session releases the vault and continues on the copy, which moves
-    /// onto the vault path under its own lock. Another process that opens
-    /// the vault in between makes the move fail; the session then reopens
-    /// the vault, or writes no more if it cannot.
-    #[cfg(windows)]
-    fn install(&mut self, temp: &Path, path: &Path, copy: VaultFile) -> Result<(), StoreError> {
-        self.check_identity()?;
-        drop(std::mem::replace(&mut self.file, copy));
-        if let Err(e) = self.file.replace_onto(path) {
-            match VaultFile::open(path) {
-                Ok(file) if file.header_body == self.file.header_body => {
-                    self.file = file;
-                    discard(temp);
-                }
-                _ => self.gate = WriteGate::Blocked(StoreError::Replaced),
-            }
-            return Err(e);
-        }
-        #[cfg(test)]
-        if fault(2) {
-            self.gate = WriteGate::Blocked(StoreError::Replaced);
-            return Err(StoreError::Io);
-        }
-        Ok(())
-    }
 }
 
 /// Control rows the copy must hold byte for byte.
@@ -269,7 +326,12 @@ fn has_index(c: &Connection) -> Result<bool, StoreError> {
 }
 
 /// Steps the same query on both connections and requires equal rows.
-fn same_rows(a: &Connection, b: &Connection, sql: &str) -> Result<(), StoreError> {
+fn same_rows(
+    a: &Connection,
+    b: &Connection,
+    sql: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), StoreError> {
     let e = |e: rusqlite::Error| sqlite_err(&e);
     let (mut sa, mut sb) = (a.prepare(sql).map_err(e)?, b.prepare(sql).map_err(e)?);
     let columns = sa.column_count();
@@ -278,6 +340,9 @@ fn same_rows(a: &Connection, b: &Connection, sql: &str) -> Result<(), StoreError
     }
     let (mut ra, mut rb) = (sa.query([]).map_err(e)?, sb.query([]).map_err(e)?);
     loop {
+        if cancelled() {
+            return Err(StoreError::Io);
+        }
         match (ra.next().map_err(e)?, rb.next().map_err(e)?) {
             (None, None) => return Ok(()),
             (Some(x), Some(y)) => {
@@ -372,6 +437,13 @@ mod tests {
         assert_eq!(u.file_space().unwrap().free_bytes, 0);
         assert_eq!(std::fs::metadata(&p).unwrap().len(), done.after);
         assert_eq!(temps(&d), 0);
+        assert_eq!(u.file.conn.limit(Limit::SQLITE_LIMIT_ATTACHED).unwrap(), 0);
+        assert!(
+            u.file
+                .conn
+                .execute("ATTACH DATABASE ':memory:' AS forbidden", [])
+                .is_err()
+        );
         // Nothing left to free.
         assert_eq!(u.compact(&|| false).unwrap(), None);
         // The session still reads and writes the compacted file.
@@ -381,6 +453,41 @@ mod tests {
         drop(u);
         let u = unlock(&p, &dir, PASSWORD).unwrap();
         assert!(u.manifest().record(kept).is_some());
+        u.verify_all(&|| false).unwrap();
+    }
+
+    #[cfg(windows)]
+    // 0012 §1: Snapshot disk growth
+    #[test]
+    fn compact_retains_windows_source_lock_after_closing_sqlite() {
+        let (d, a) = (TestDir::new(), TestDir::new());
+        let (p, dir) = copy_fixture(&d, &a, "v.qvault");
+        let mut u = unlock(&p, &dir, PASSWORD).unwrap();
+        with_free_pages(&mut u);
+        FAULT.with(|f| f.set(6));
+        u.compact(&|| false).unwrap().unwrap();
+        reset();
+        u.verify_all(&|| false).unwrap();
+        drop(u);
+        unlock(&p, &dir, PASSWORD)
+            .unwrap()
+            .verify_all(&|| false)
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compact_preserves_non_utf8_path_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+        let (d, a) = (TestDir::new(), TestDir::new());
+        let (p, dir) = copy_fixture(&d, &a, "v.qvault");
+        let non_utf8 = d
+            .path()
+            .join(std::ffi::OsString::from_vec(b"vault-\xff.qvault".to_vec()));
+        std::fs::rename(p, &non_utf8).unwrap();
+        let mut u = unlock(&non_utf8, &dir, PASSWORD).unwrap();
+        with_free_pages(&mut u);
+        u.compact(&|| false).unwrap().unwrap();
         u.verify_all(&|| false).unwrap();
     }
 
@@ -434,6 +541,40 @@ mod tests {
         assert_eq!(temps(&d), 0);
         assert_eq!(std::fs::read(&p).unwrap(), before);
         edit(&mut u, kept, "still writable");
+
+        // Same-length ciphertext corruption must be found before replacement.
+        let before = std::fs::read(&p).unwrap();
+        FAULT.with(|f| f.set(5));
+        assert_eq!(err(u.compact(&|| false)), StoreError::Integrity);
+        reset();
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+        assert_eq!(temps(&d), 0);
+
+        // The progress handler interrupts inside VACUUM, not after the copy.
+        // Enough rows to cross the normal progress granularity even though
+        // the compacted ciphertext itself is small.
+        for i in 0..100 {
+            edit(&mut u, RecordId::generate().unwrap(), &format!("row {i}"));
+        }
+        let before = std::fs::read(&p).unwrap();
+        FAULT.with(|f| f.set(4));
+        assert_eq!(u.compact(&|| false), Err(StoreError::LimitExceeded));
+        reset();
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+        assert_eq!(temps(&d), 0);
+        assert_eq!(u.file.conn.limit(Limit::SQLITE_LIMIT_ATTACHED).unwrap(), 0);
+        // Exercise the public borrowed callback too: cancellation arriving
+        // after the initial pre-copy check is forwarded to the worker, and
+        // can never install its output.
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        assert_eq!(
+            u.compact(&|| checks.fetch_add(1, Ordering::SeqCst) > 0),
+            Err(StoreError::Io)
+        );
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+        assert_eq!(temps(&d), 0);
+        assert_eq!(u.file.conn.limit(Limit::SQLITE_LIMIT_ATTACHED).unwrap(), 0);
+        edit(&mut u, kept, "writable after interruption");
 
         // Too little disk space for the copy: refused before any file.
         crate::space::DISK.with(|s| {

@@ -61,6 +61,40 @@ public final class VaultImportTest extends PlatformTest {
     private int opens(Instrumentation os, Uri provider) {
         return os.getTargetContext().getContentResolver().call(provider, "stats", null, null).getInt("opens");
     }
+    /** Synthetic native handles: stale reads, opens, closes and cleanup must
+     * leave the current stream intact. No provider or personal data is used. */
+    private void staleStreamsCannotTouchTheCurrentStream(MainActivity main) throws Exception {
+        java.lang.reflect.Field pick = MainActivity.class.getDeclaredField("pickId");
+        java.lang.reflect.Field state = MainActivity.class.getDeclaredField("pickState");
+        java.lang.reflect.Field id = MainActivity.class.getDeclaredField("streamId");
+        java.lang.reflect.Field owner = MainActivity.class.getDeclaredField("streamPick");
+        java.lang.reflect.Field reader = MainActivity.class.getDeclaredField("reader");
+        for (java.lang.reflect.Field f : new java.lang.reflect.Field[]{pick,state,id,owner,reader}) f.setAccessible(true);
+        long oldPick = pick.getLong(main); int oldState = state.getInt(main);
+        boolean[] closed = {false};
+        java.io.ByteArrayInputStream input = new java.io.ByteArrayInputStream(new byte[]{7,8,9}) {
+            @Override public void close() { closed[0] = true; }
+        };
+        synchronized (main) {
+            assertEquals(0L,id.getLong(main));
+            pick.setLong(main,2); state.setInt(main,1);
+            id.setLong(main,10); owner.setLong(main,2); reader.set(main,input);
+        }
+        try {
+            assertNull(main.qvRead(9,3));
+            assertFalse(main.qvCloseDoc(9,false));
+            assertEquals(0L,main.qvOpenRead(1));
+            assertEquals(0L,main.qvOpenWrite(1));
+            main.qvForgetPickFor(1);
+            assertFalse("Stale operations did not close current input",closed[0]);
+            assertTrue(java.util.Arrays.equals(new byte[]{7,8,9},main.qvRead(10,3)));
+            assertTrue(main.qvCloseDoc(10,false));
+            assertTrue(closed[0]);
+        } finally {
+            main.qvCloseDoc(10,false);
+            synchronized (main) { pick.setLong(main,oldPick); state.setInt(main,oldState); }
+        }
+    }
     public void testContentProviderImportRetriesFailuresCancellationAndDurableReopen() throws Exception {
         Instrumentation os = getInstrumentation();
         assertEquals("Dedicated disposable UID", "org.quickvault.validation49", os.getTargetContext().getPackageName());
@@ -79,6 +113,7 @@ public final class VaultImportTest extends PlatformTest {
         Uri provider = Uri.parse("content://"+os.getContext().getPackageName()+".vault-import");
         MainActivity main = (MainActivity)os.startActivitySync(new Intent().setClassName("org.quickvault.validation49", "dev.dioxus.main.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         activity = main;
+        staleStreamsCannotTouchTheCurrentStream(main);
         WebView[] found = new WebView[1];
         os.runOnMainSync(() -> main.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
         try {

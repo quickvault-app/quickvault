@@ -72,7 +72,7 @@ pub use endpoint::{EndpointPolicy, ListenScope, parse_endpoint};
 pub use exchange::{Accepted, ExchangeVault, Role, RoundReport, credential_grant_plaintext};
 pub use joiner::{
     EnrollmentCredential, JoinCode, JoinedNewDevice, JoinerContext, JoinerUi, JoinerVault,
-    join_new_device, sync_with_code,
+    join_new_device, sync_with_code, sync_with_code_until,
 };
 pub use qr::{LanQrInfo, inspect_lan_qr};
 pub use qv_crypto::lan::Sas;

@@ -11,7 +11,7 @@
 //! §3.4).
 //!
 //! File: at most [`MAX_ANCHOR_BYTES`], mode 0600, canonical CBOR map
-//! (unknown keys fail closed). Development values, frozen in phase 1.16:
+//! (unknown keys fail closed). 1.0 values (frozen, spec 0015 §4.6):
 //!
 //! | Key | Field | CBOR |
 //! |-----|-------|------|
@@ -49,7 +49,7 @@ use crate::error::StoreError;
 use crate::fs;
 use crate::head::Anchor;
 
-/// The development anchor format.
+/// The anchor format (frozen at 1.0).
 const ANCHOR_FORMAT: u64 = 0x7FFF_0001;
 
 /// Largest anchor file.
@@ -60,7 +60,7 @@ fn malformed<E>(_: E) -> StoreError {
 }
 
 impl Anchor {
-    fn encode(&self) -> Result<Vec<u8>, StoreError> {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, StoreError> {
         let mut e = Encoder::new();
         e.map(|m| {
             m.entry(0, |e| {
@@ -88,7 +88,7 @@ impl Anchor {
         Ok(e.finish().map_err(|_| StoreError::Internal)?.to_vec())
     }
 
-    fn decode(input: &[u8]) -> Result<Self, StoreError> {
+    pub(crate) fn decode(input: &[u8]) -> Result<Self, StoreError> {
         let mut d = Decoder::new(input).map_err(malformed)?;
         let (mut format, mut vault_id, mut generation, mut seq, mut digest) =
             (None, None, None, None, None);

@@ -45,7 +45,9 @@ struct HandshakeStream {
 impl std::io::Read for HandshakeStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = std::io::Read::read(&mut self.prefix, buf)?;
-        if n != 0 { return Ok(n); }
+        if n != 0 {
+            return Ok(n);
+        }
         let max = buf.len().min(self.remaining.unwrap_or(usize::MAX));
         if max == 0 {
             return Err(std::io::ErrorKind::InvalidData.into());
@@ -66,10 +68,53 @@ impl std::io::Write for HandshakeStream {
     }
 }
 static ACTIVE_CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// QuickVault (plan 0050 review finding 4): the hard ceiling on connection
+/// threads in every phase. An unauthenticated peer can hold at most
+/// `PENDING_CAP` of them; the rest serve the webview's own authenticated
+/// websocket and capability media requests, which need its key or token.
+const CONNECTION_CEILING: usize = 16;
 struct ConnectionPermit;
 impl Drop for ConnectionPermit {
     fn drop(&mut self) {
         ACTIVE_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+/// QuickVault (plan 0050 review finding 4): connections that have not yet
+/// sent their initial header. Any local process can open these, so they are
+/// not refused when full: the oldest is shut down to admit the newest. The
+/// webview sends its header at once, so a peer holding idle connections can
+/// no longer starve the app's own websocket or media requests; only a
+/// continuous connection flood can still delay them.
+const PENDING_CAP: usize = 4;
+#[derive(Clone, Default)]
+struct Pending(Arc<Mutex<(u64, VecDeque<(u64, TcpStream)>)>>);
+struct PendingSlot(Pending, u64);
+impl Pending {
+    fn admit(&self, stream: &TcpStream) -> Option<PendingSlot> {
+        let clone = stream.try_clone().ok()?;
+        let mut held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while held.1.len() >= PENDING_CAP {
+            if let Some((_, oldest)) = held.1.pop_front() {
+                let _ = oldest.shutdown(std::net::Shutdown::Both);
+            }
+        }
+        held.0 += 1;
+        let id = held.0;
+        held.1.push_back((id, clone));
+        Some(PendingSlot(self.clone(), id))
+    }
+}
+impl Drop for PendingSlot {
+    fn drop(&mut self) {
+        let mut held = self
+            .0
+             .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.1.retain(|(id, _)| *id != self.1);
     }
 }
 
@@ -217,14 +262,24 @@ impl EditWebsocket {
 
         let notify = Arc::new(Notify::new());
         let (location, server) = start_server();
-        if preview.is_some() { crate::hardened::preview_port(location.port); }
+        if preview.is_some() {
+            crate::hardened::preview_port(location.port);
+        }
         let current_location = Arc::new(Mutex::new(location));
 
         let connections_ = connections.clone();
         let current_location_ = current_location.clone();
         let notify_ = notify.clone();
         std::thread::spawn(move || {
-            Self::accept_loop(notify_, server, current_location_, connections_, hardened, preview)
+            Self::accept_loop(
+                notify_,
+                server,
+                current_location_,
+                connections_,
+                hardened,
+                preview,
+                Pending::default(),
+            )
         });
 
         Self {
@@ -246,6 +301,7 @@ impl EditWebsocket {
         connections: Arc<RwLock<HashMap<u32, WebviewConnectionState>>>,
         hardened: bool,
         preview: Option<crate::hardened::Preview>,
+        pending: Pending,
     ) {
         loop {
             // Accept connections until we hit an error
@@ -256,6 +312,7 @@ impl EditWebsocket {
                     connections.clone(),
                     hardened,
                     preview.clone(),
+                    &pending,
                 );
             }
 
@@ -266,7 +323,9 @@ impl EditWebsocket {
             // The client may try to reconnect to the old port that is now being used by an attacker who steals the client
             // key and uses it to read the edits from the new port.
             let (location, new_server) = start_server();
-            if preview.is_some() { crate::hardened::preview_port(location.port); }
+            if preview.is_some() {
+                crate::hardened::preview_port(location.port);
+            }
             notify.notify_waiters();
             *current_location.lock().unwrap() = location;
             server = new_server;
@@ -279,14 +338,15 @@ impl EditWebsocket {
         connections: Arc<RwLock<HashMap<u32, WebviewConnectionState>>>,
         hardened: bool,
         preview: Option<crate::hardened::Preview>,
+        pending: &Pending,
     ) {
         use tungstenite::handshake::server::{Request, Response};
-        let permit = if hardened {
+        let (permit, slot) = if hardened {
             if ACTIVE_CONNECTIONS
                 .fetch_update(
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
-                    |n| (n < 4).then_some(n + 1),
+                    |n| (n < CONNECTION_CEILING).then_some(n + 1),
                 )
                 .is_err()
             {
@@ -300,22 +360,34 @@ impl EditWebsocket {
             {
                 return;
             }
-            Some(permit)
+            let Some(slot) = pending.admit(&stream) else {
+                return;
+            };
+            (Some(permit), Some(slot))
         } else {
-            None
+            (None, None)
         };
         let task = move || {
             let mut stream = stream;
             let prefix = if hardened {
-                let Some(head) = crate::hardened_media::read_head(&mut stream) else { return; };
+                let head = crate::hardened_media::read_head(&mut stream);
+                drop(slot);
+                let Some(head) = head else {
+                    return;
+                };
                 if crate::hardened_media::is_preview(&head) {
                     let _permit = permit;
-                    let port = server_location.lock().unwrap_or_else(std::sync::PoisonError::into_inner).port;
+                    let port = server_location
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .port;
                     crate::hardened_media::serve(&mut stream, &head, port, preview.as_ref());
                     return;
                 }
                 head
-            } else { Vec::new() };
+            } else {
+                Vec::new()
+            };
             let stream = HandshakeStream {
                 inner: stream,
                 remaining: hardened.then_some(8192 - prefix.len()),
@@ -524,8 +596,11 @@ impl EditWebsocket {
                 WebviewConnectionState::Connected { edits_outgoing },
             );
         };
-        if hardened { std::thread::spawn(task); } else { task(); }
-
+        if hardened {
+            std::thread::spawn(task);
+        } else {
+            task();
+        }
     }
 
     pub(crate) fn create_queue(&self) -> WryQueue {
@@ -752,6 +827,7 @@ mod hardened_transport_tests {
                     connections,
                     true,
                     None,
+                    &Pending::default(),
                 );
             })
         };
@@ -759,7 +835,10 @@ mod hardened_transport_tests {
         let url = format!("ws://127.0.0.1:{port}/0/{client_key}");
         let (mut page, _) = tungstenite::client(url.as_str(), stream).unwrap();
         // The server key arrives first, then the batch.
-        assert!(matches!(page.read().unwrap(), tungstenite::Message::Text(_)));
+        assert!(matches!(
+            page.read().unwrap(),
+            tungstenite::Message::Text(_)
+        ));
         server.join().unwrap();
         let mut applied = connections
             .write()
@@ -767,7 +846,10 @@ mod hardened_transport_tests {
             .get_mut(&0)
             .unwrap()
             .add_message(vec![1, 2, 3]);
-        assert!(matches!(page.read().unwrap(), tungstenite::Message::Binary(_)));
+        assert!(matches!(
+            page.read().unwrap(),
+            tungstenite::Message::Binary(_)
+        ));
         // A page in the background acknowledges only after the handshake
         // bound has passed; the batch must still count as applied.
         std::thread::sleep(std::time::Duration::from_millis(3500));
@@ -811,8 +893,67 @@ mod hardened_transport_tests {
             Arc::new(RwLock::new(HashMap::new())),
             true,
             None,
+            &Pending::default(),
         );
         assert!(start.elapsed() < std::time::Duration::from_secs(5));
         drop(peer);
+    }
+    // Plan 0050 review finding 4: idle unauthenticated peers holding every
+    // pending slot must not starve the page's own websocket. The old shared
+    // cap of four refused it until a peer's 3 s deadline passed.
+    #[test]
+    fn hardened_idle_peers_cannot_starve_the_page_websocket() {
+        use std::io::Read;
+        let (location, listener) = start_server();
+        let port = listener.local_addr().unwrap().port();
+        let client_key = encode_key_string(&location.client_key);
+        let connections = Arc::new(RwLock::new(HashMap::new()));
+        connections
+            .write()
+            .unwrap()
+            .insert(0u32, WebviewConnectionState::default());
+        {
+            let connections = connections.clone();
+            let location = Arc::new(Mutex::new(location));
+            let pending = Pending::default();
+            std::thread::spawn(move || {
+                while let Ok((stream, _)) = listener.accept() {
+                    EditWebsocket::handle_connection(
+                        stream,
+                        location.clone(),
+                        connections.clone(),
+                        true,
+                        None,
+                        &pending,
+                    );
+                }
+            });
+        }
+        let start = std::time::Instant::now();
+        let mut idle: Vec<_> = (0..PENDING_CAP + 2)
+            .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
+            .collect();
+        // Let the listener admit every idle peer before the page connects.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let url = format!("ws://127.0.0.1:{port}/0/{client_key}");
+        let (mut page, _) = tungstenite::client(url.as_str(), stream).unwrap();
+        assert!(matches!(
+            page.read().unwrap(),
+            tungstenite::Message::Text(_)
+        ));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        // The oldest idle peer was shut down to make room, before its deadline.
+        let oldest = &mut idle[0];
+        oldest
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut byte = [0];
+        assert!(matches!(oldest.read(&mut byte), Ok(0) | Err(_)));
+        assert!(start.elapsed() < std::time::Duration::from_secs(3));
+        drop(idle);
     }
 }

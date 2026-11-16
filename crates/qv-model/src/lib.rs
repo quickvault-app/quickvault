@@ -22,9 +22,8 @@
 //! | [`Totp`] | `otpauth://totp` URIs and RFC 6238 codes (HMAC in `qv-crypto`) | 0003 §5.4 |
 //!
 //! **Format.** Each record kind's integer-key registry is documented on its
-//! payload type and on [`RecordVersion`]. The keys are **development values**:
-//! the on-disk format is unstable until the format freeze (roadmap phase
-//! 1.16), which records the frozen registry in specs 0003/0004. Optional keys
+//! payload type and on [`RecordVersion`]; the keys are frozen at 1.0 and
+//! registered in spec 0015 §5. Optional keys
 //! are absent when the value is absent, never `null`, so every value has one
 //! encoding. Unknown keys are kept verbatim ([`Extensions`]); unknown record
 //! kinds and keyslot profiles fail closed.

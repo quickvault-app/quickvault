@@ -12,7 +12,7 @@
 //! file's streamed SHA-256 and size match. Rows never become paths: names are
 //! formatted from the 16-byte archive ID only.
 //!
-//! Development wire format (frozen in phase 1.16): canonical CBOR map
+//! Wire format (frozen at 1.0, spec 0015 §4.10): canonical CBOR map
 //!
 //! | Key | Field | CBOR |
 //! |-----|-------|------|

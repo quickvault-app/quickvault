@@ -29,6 +29,16 @@ Upstream license files are unchanged.
 
 ## Exact maintained changes
 
+- Plan 0065, in edits.rs: at most four pending initial headers, with the
+  oldest idle socket shut down to admit a new arrival, under a total thread
+  ceiling of sixteen. A set of idle unauthenticated clients no longer holds
+  every slot the page needs to connect; continuous connection flooding can
+  still delay service. In hardened_media.rs, opaque `null` origins receive
+  no CORS grant; the explicit app origin remains allowed. Real-engine
+  qualification is recorded in plan 0065.
+  The source archive hash above was reverified and the exact modified-path
+  inventory compared on 2026-11-16. Focused `hardened` tests: 14 pass.
+
 - Plan0050 removes the desktop build's lazy-js-bundle/Bun invocation and its
   build-only dependency. It consumes the **unchanged prebuilt** native_eval.js
   from the hash-verified0.7.10 archive, SHA-256

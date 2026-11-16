@@ -203,6 +203,10 @@ macro_rules! quick_message {
             Some(Q::Unreadable) => {
                 concat!($base, " The vault file could not be read when checked.")
             }
+            Some(Q::Storage) => concat!(
+                $base,
+                " The vault file was busy or could not be read, or storage is full."
+            ),
             None => $base,
         }
     }};
@@ -2066,10 +2070,20 @@ impl Controller {
                 s.error = Some(AppError::RotationPending);
             }
             Err(e) => {
-                if matches!(
+                // A failure that discarded the staged import (an integrity
+                // or format error after the password step, or an incomplete
+                // publication) ends it: a retry would report a misleading
+                // error (review of plan 0049, finding 4). A wrong password,
+                // a taken name or a cancel leaves it for another try.
+                let discarded = matches!(
                     e,
-                    AppError::Core(CoreError::Store(qv_core::StoreError::PublicationIncomplete))
-                ) {
+                    AppError::Core(CoreError::Store(
+                        qv_core::StoreError::Integrity
+                            | qv_core::StoreError::Unsupported
+                            | qv_core::StoreError::PublicationIncomplete
+                    ))
+                );
+                if s.pending_import.is_some() && discarded {
                     s.pending_import = None;
                     s.import_name.clear();
                     s.import_ack = false;
@@ -2308,16 +2322,19 @@ impl Controller {
                 return;
             };
             let note = group.map(|g| g.id_hex()).unwrap_or_default();
-            if ws.view_note.as_deref() == Some(note.as_str()) {
-                return;
-            }
-            let Some(tag) = ws.view_tag.clone() else {
+            let Ok(tag) = session.device_view_tag() else {
                 return;
             };
+            if ws.view_note.as_deref() == Some(note.as_str())
+                && ws.view_tag.as_deref() == Some(tag.as_str())
+            {
+                return;
+            }
             let Ok(sealed) = session.seal_device_view(note.as_bytes()) else {
                 return;
             };
             ws.view_note = Some(note);
+            ws.view_tag = Some(tag.clone());
             let mut views = self.views();
             views.put(&tag, sealed);
             views.clone()

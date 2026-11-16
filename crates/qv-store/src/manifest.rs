@@ -8,8 +8,8 @@
 //! list. It excludes itself, its checkpoint and local-only tables.
 //!
 //! Plaintext (canonical CBOR map; all keys required; unknown keys fail
-//! closed, because the manifest is a control structure). Development values,
-//! frozen in phase 1.16:
+//! closed, because the manifest is a control structure). 1.0 values (frozen,
+//! spec 0015 §4.4):
 //!
 //! | Key | Field | CBOR |
 //! |-----|-------|------|
@@ -61,7 +61,7 @@ use crate::limits::{
 };
 use crate::object::Scope;
 
-/// The development manifest format.
+/// The manifest format (frozen at 1.0).
 pub const MANIFEST_FORMAT: u64 = 0x7FFF_0002;
 
 const AAD_LABEL: &str = "qv/manifest/v1";
@@ -276,6 +276,25 @@ impl ObjectRef {
     /// SHA-256 of the ciphertext.
     pub fn sha256(&self) -> &[u8; 32] {
         &self.sha256
+    }
+}
+
+#[cfg(test)]
+impl ObjectRef {
+    /// A reference with fixed fields and no object behind it, for the frozen
+    /// golden encodings (spec 0015 §6, plan 0064).
+    pub(crate) fn golden(
+        object_id: ObjectId,
+        data_profile: StoredDataProfile,
+        length: u64,
+        sha256: [u8; 32],
+    ) -> Self {
+        Self {
+            object_id,
+            data_profile,
+            length,
+            sha256,
+        }
     }
 }
 

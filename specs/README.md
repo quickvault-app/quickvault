@@ -10,6 +10,14 @@ rows of 0012) is not planned (owner, 2026-11-14). Those sections stay as
 design records with unchanged statuses; QuickVault 1.0 is offline plus
 direct LAN sync.
 
+Plan 0065 (2026-11-16) completes the 1.0 review repairs. 0004 §1.4 now
+requires full compaction ciphertext comparison and interruption on cancellation
+while retaining both process locks on Windows; §5.4 rejects unsuitable picked
+streams at the fixed SQLite header. 0002 §5.4 distinguishes transient storage
+failures from stale biometric keys. Frozen file/wire encodings are unchanged.
+The separate LAN source review and its limits are recorded in
+`plans/0065-release-review-repairs/LAN-REVIEW.md`.
+
 Plan 0057's replay repair (2026-11-14, owner continuation) clarifies 0003 §6.4
 and 0009 §1.8: explicit replay reconstructs Linux's memory playback source
 through the still-live authenticated route, with close/lock cancellation;
@@ -123,6 +131,7 @@ phase 2.4 implementation; neither spec's overall status is promoted.
 | [0012](0012-security-validation.md) | Security Validation and Release Gates | Accepted |
 | [0013](0013-lan-sync-protocol.md) | Direct LAN Sync Protocol | Accepted |
 | [0014](0014-lan-one-scan-sync.md) | One-Scan LAN Sync (no device links) | Accepted |
+| [0015](0015-format-registry.md) | Format Registry (frozen at 1.0) | Accepted |
 
 0004 §6.2 and 0011 §4 specify the delegated archive merge/export contracts and
 explicit self-contained backup slots (2026-10-31, plan 0028).

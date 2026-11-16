@@ -2,7 +2,7 @@
 
 | Status | Created | Approved | Specs |
 |--------|---------|----------|-------|
-| Implemented — focused checks pass; phone check and fresh-context review (crypto) pending | 2026-11-15 | 2026-11-15 (owner request; owner chose the encrypted per-device note; details delegated, standing 2026-11-02) | 0002 §3.3 (amended), 0009 §1.8 (amended) |
+| Reviewed 2026-11-16 (see REVIEW.md) — phone check pending | 2026-11-15 | 2026-11-15 (owner request; owner chose the encrypted per-device note; details delegated, standing 2026-11-02) | 0002 §3.3 (amended), 0009 §1.8 (amended) |
 
 ## Intent
 

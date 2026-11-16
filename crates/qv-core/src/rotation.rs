@@ -22,7 +22,7 @@ use qv_store::{
     SnapshotInventory, StoreError,
 };
 
-use crate::snapshot::{RecoverySnapshot, SnapshotPolicy};
+use crate::snapshot::{RecoverySnapshot, SnapshotPolicy, begin_recovery};
 use crate::{CancelToken, Core, CoreError, Session};
 
 /// How many distinct phrase words must be confirmed before installation.
@@ -106,14 +106,22 @@ impl Session {
         cancel: Option<&CancelToken>,
     ) -> Result<Rotation, CoreError> {
         self.invalidate_quick()?;
-        self.read(|ctx| {
+        // The copy and the hand-over share one guard: no other call can
+        // commit between them, so the copy is exactly the rotated state
+        // (0007 §3.2; plan 0050 review finding 2).
+        let (recovery, open) = self.take_open_after(|ctx| {
             if ctx.open.read_only || ctx.open.snapshots.is_none() {
                 return Err(CoreError::NotAllowed);
             }
-            Ok(())
+            let c = ctx.canceller();
+            let now = ctx.now();
+            let recovery = begin_recovery(ctx.open, now, allow_snapshot_over_budget, &|| {
+                c.is_cancelled() || cancel.is_some_and(CancelToken::is_cancelled)
+            })?;
+            #[cfg(test)]
+            crate::session::hooks::reached(crate::session::hooks::Point::RotationCopied);
+            Ok(recovery)
         })?;
-        let recovery = self.begin_destructive(allow_snapshot_over_budget, cancel)?;
-        let open = self.take_open()?;
         let policy = open.snapshots.clone().ok_or(CoreError::Internal)?;
         let vault = open.vault;
         let cancelled = || cancel.is_some_and(CancelToken::is_cancelled);

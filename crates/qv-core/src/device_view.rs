@@ -6,7 +6,8 @@
 //! filed under a tag MACed with that key, so without VK the app's file holds
 //! no readable vault data and cannot be linked to a vault file. A new key
 //! generation (rotation) makes old notes unreadable, which is harmless.
-use qv_crypto::{MacProfile, SecretBytes, StoredDataProfile, purpose};
+use qv_crypto::{KeyGeneration, MacProfile, SecretBytes, StoredDataProfile, VaultId, purpose};
+use zeroize::Zeroizing;
 
 use crate::error::{CoreError, crypto};
 use crate::session::Session;
@@ -16,14 +17,48 @@ pub const DEVICE_VIEW_NOTE_MAX: usize = 64;
 /// The longest sealed note: the 24-byte nonce, then the ciphertext.
 pub const DEVICE_VIEW_SEALED_MAX: usize = 256;
 const NONCE: usize = 24;
-const TAG_MESSAGE: &[u8] = b"qv/device-view/tag/v1";
-const NOTE_AAD: &[u8] = b"qv/device-view/note/v1";
+/// Every note is sealed at this plaintext length (a length byte, the note,
+/// zeros), so the sealed size does not tell an empty note from a group.
+const PADDED: usize = 1 + DEVICE_VIEW_NOTE_MAX;
+
+/// The key and the scope its AAD and tag bind (0002 §7.2).
+struct ViewKey {
+    key: qv_crypto::PurposeKey<purpose::DeviceView>,
+    vault_id: VaultId,
+    generation: KeyGeneration,
+}
+
+impl ViewKey {
+    /// `["qv/device-view/tag/v1", vault_id, key_generation]`.
+    fn tag_message(&self) -> Result<Zeroizing<Vec<u8>>, CoreError> {
+        qv_encoding::encode_array(|a| {
+            a.text("qv/device-view/tag/v1");
+            a.bytes(&self.vault_id.0);
+            a.uint(u64::from(self.generation.0));
+            Ok(())
+        })
+        .map_err(|_| CoreError::Internal)
+    }
+
+    /// `["qv/device-view/note/v1", vault_id, key_generation, data_profile]`.
+    fn note_aad(&self, profile: StoredDataProfile) -> Result<Zeroizing<Vec<u8>>, CoreError> {
+        qv_encoding::encode_array(|a| {
+            a.text("qv/device-view/note/v1");
+            a.bytes(&self.vault_id.0);
+            a.uint(u64::from(self.generation.0));
+            a.uint(u64::from(profile.id()));
+            Ok(())
+        })
+        .map_err(|_| CoreError::Internal)
+    }
+}
 
 impl Session {
-    fn device_view_key(&self) -> Result<qv_crypto::PurposeKey<purpose::DeviceView>, CoreError> {
+    fn device_view_key(&self) -> Result<ViewKey, CoreError> {
         self.read(|ctx| {
             let h = ctx.open.vault.header();
-            ctx.open
+            let key = ctx
+                .open
                 .vault
                 .vault_key()
                 .purpose_key::<purpose::DeviceView>(
@@ -31,29 +66,39 @@ impl Session {
                     h.key_generation,
                     h.derivation_profile,
                 )
-                .map_err(crypto)
+                .map_err(crypto)?;
+            Ok(ViewKey {
+                key,
+                vault_id: h.vault_id,
+                generation: h.key_generation,
+            })
         })
     }
 
     /// This vault's note name on this device: 64 hex digits, stable for the
     /// vault and its key generation, meaningless without VK.
     pub fn device_view_tag(&self) -> Result<String, CoreError> {
-        let key = self.device_view_key()?;
-        let tag = qv_crypto::mac(&key, MacProfile::V1, TAG_MESSAGE).map_err(crypto)?;
+        let k = self.device_view_key()?;
+        let tag = qv_crypto::mac(&k.key, MacProfile::V1, &k.tag_message()?).map_err(crypto)?;
         Ok(crate::setup::hex(tag.as_bytes()))
     }
 
     /// Seals `note` (at most [`DEVICE_VIEW_NOTE_MAX`] bytes) for this vault.
     pub fn seal_device_view(&self, note: &[u8]) -> Result<Vec<u8>, CoreError> {
-        if note.len() > DEVICE_VIEW_NOTE_MAX {
-            return Err(CoreError::LimitExceeded);
-        }
-        let key = self.device_view_key()?;
+        let len = u8::try_from(note.len())
+            .ok()
+            .filter(|_| note.len() <= DEVICE_VIEW_NOTE_MAX)
+            .ok_or(CoreError::LimitExceeded)?;
+        let mut padded = Zeroizing::new([0u8; PADDED]);
+        padded[0] = len;
+        padded[1..=note.len()].copy_from_slice(note);
+        let k = self.device_view_key()?;
+        let profile = StoredDataProfile::V1;
         let sealed = qv_crypto::seal(
-            &key,
-            StoredDataProfile::V1,
-            NOTE_AAD,
-            note,
+            &k.key,
+            profile,
+            &k.note_aad(profile)?,
+            padded.as_slice(),
             DEVICE_VIEW_SEALED_MAX - NONCE,
         )
         .map_err(crypto)?;
@@ -74,20 +119,26 @@ impl Session {
             return Err(CoreError::NotFound);
         };
         let nonce: &[u8; NONCE] = nonce.try_into().map_err(|_| CoreError::NotFound)?;
-        let key = self.device_view_key()?;
-        let note = qv_crypto::open(
-            &key,
-            StoredDataProfile::V1,
-            NOTE_AAD,
+        let k = self.device_view_key()?;
+        let profile = StoredDataProfile::V1;
+        let padded = qv_crypto::open(
+            &k.key,
+            profile,
+            &k.note_aad(profile)?,
             nonce,
             ciphertext,
             DEVICE_VIEW_SEALED_MAX - NONCE,
         )
         .map_err(|_| CoreError::NotFound)?;
-        if note.len() > DEVICE_VIEW_NOTE_MAX {
+        let padded = padded.expose_secret();
+        let len = usize::from(*padded.first().ok_or(CoreError::NotFound)?);
+        if padded.len() != PADDED || len > DEVICE_VIEW_NOTE_MAX {
             return Err(CoreError::NotFound);
         }
-        Ok(note)
+        SecretBytes::try_init(len, |out| {
+            out.copy_from_slice(&padded[1..=len]);
+            Ok(())
+        })
     }
 }
 
@@ -122,8 +173,10 @@ mod tests {
             s.seal_device_view(b"0123456789abcdef0123456789abcdef")
                 .unwrap()
         );
-        // An empty note means "All items".
+        // An empty note means "All items"; it seals to the same size as a
+        // full one.
         let empty = s.seal_device_view(b"").unwrap();
+        assert_eq!(empty.len(), sealed.len());
         assert!(
             s.open_device_view(&empty)
                 .unwrap()

@@ -34,6 +34,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
@@ -617,10 +618,11 @@ pub(crate) fn remove_stale_temps(final_path: &Path) -> Result<(), StoreError> {
     if crate::rotation_guard::is_reserved(final_path) {
         return Ok(());
     }
-    let Some(name) = final_path.file_name().and_then(OsStr::to_str) else {
-        return Err(StoreError::Unsupported);
-    };
-    let prefix = format!(".{name}.tmp-");
+    let name = final_path.file_name().ok_or(StoreError::Unsupported)?;
+    let mut prefix = OsString::from(".");
+    prefix.push(name);
+    prefix.push(".tmp-");
+    let prefix = prefix.as_os_str().as_bytes();
     let parent = parent_of(final_path);
     check_parent(final_path)?;
     let _dir = lock_dir(parent)?;
@@ -631,43 +633,48 @@ pub(crate) fn remove_stale_temps(final_path: &Path) -> Result<(), StoreError> {
     for entry in entries {
         let Ok(entry) = entry else { continue };
         let file_name = entry.file_name();
-        let Some(n) = file_name.to_str() else {
-            continue;
-        };
-        let Some(rest) = n.strip_prefix(&prefix) else {
+        let Some(rest) = file_name.as_bytes().strip_prefix(prefix) else {
             continue;
         };
         // A journal alone does not establish that no producer is live.
         let hex = rest;
-        if hex.len() != 16 || !hex.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+        if hex.len() != 16 || !hex.iter().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
             continue;
         }
-        let path = parent.join(n);
-        let Ok(st) = rustix::fs::lstat(&path) else {
-            continue;
-        };
-        if !is_owner_only(&st) {
-            continue;
-        }
-        let lease = match open_existing(&path) {
-            Ok(lease) => lease,
-            Err(StoreError::Locked | StoreError::NotFound) => continue,
-            Err(e) => return Err(e),
-        };
-        lease.same_as_path(&path)?;
-        let journal = with_suffix(&path, "-journal");
-        match lstat(&journal) {
-            Ok(st) if is_owner_only(&st) => {
-                std::fs::remove_file(&journal).map_err(crate::error::io_err)?;
-            }
-            Ok(_) => continue,
-            Err(Errno::NOENT) => {}
-            Err(e) => return Err(errno_err(e)),
-        }
-        lease.same_as_path(&path)?;
-        std::fs::remove_file(&path).map_err(crate::error::io_err)?;
+        // One file that cannot be checked or removed (over the size limit,
+        // swapped mid-check, an I/O error) is left alone; the pass goes on
+        // (review of plan 0050, finding 5).
+        let _ = remove_stale_temp(&parent.join(file_name));
     }
     sync_dir(parent)
+}
+
+/// Removes one unleased temporary sibling and its journal, re-checking the
+/// file's identity before each removal.
+fn remove_stale_temp(path: &Path) -> Result<(), StoreError> {
+    let Ok(st) = rustix::fs::lstat(path) else {
+        return Ok(());
+    };
+    if !is_owner_only(&st) {
+        return Ok(());
+    }
+    let lease = match open_existing(path) {
+        Ok(lease) => lease,
+        Err(StoreError::Locked | StoreError::NotFound) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    lease.same_as_path(path)?;
+    let journal = with_suffix(path, "-journal");
+    match lstat(&journal) {
+        Ok(st) if is_owner_only(&st) => {
+            std::fs::remove_file(&journal).map_err(crate::error::io_err)?;
+        }
+        Ok(_) => return Ok(()),
+        Err(Errno::NOENT) => {}
+        Err(e) => return Err(errno_err(e)),
+    }
+    lease.same_as_path(path)?;
+    std::fs::remove_file(path).map_err(crate::error::io_err)
 }
 
 /// `path` with `suffix` appended to its file name (e.g. `-journal`).
@@ -974,6 +981,20 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), 32);
+    }
+
+    #[test]
+    fn stale_cleanup_skips_a_file_it_cannot_check() {
+        // A directory under a temporary name fails the open check; the pass
+        // still removes the stale file next to it (review of plan 0050).
+        let d = TestDir::new();
+        let target = d.join("v.qvault");
+        let odd = d.subdir(".v.qvault.tmp-0000000000000000", 0o700);
+        let stale = d.join(".v.qvault.tmp-1111111111111111");
+        write_file(&stale, b"left by a crash", 0o600);
+        reclaim(&target, || !stale.exists());
+        assert!(!stale.exists() && odd.is_dir());
+        assert_eq!(remove_stale_temps(&target), Ok(()));
     }
 
     // 0012 §1: Snapshot disk growth

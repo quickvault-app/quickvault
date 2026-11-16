@@ -19,7 +19,9 @@ anchor. The active DB is private application storage, not a file-sync target.
 1.1. Extension `.qvault`; fixed `application_id` and `user_version` (the
 schema version). Schema `0x7FFF0005` adds `snapshot_index` (§2.5); a file of
 schema `0x7FFF0004` with exactly that schema's tables opens and gains the
-table in its first write transaction (plan 0059).
+table in its first write transaction (plan 0059). These values, and every
+other constant and structure of this spec, are frozen at 1.0 as registered in
+0015.
 Use owner-only file permissions (0600, private 0700 directory on Unix;
 equivalent ACLs elsewhere). Reject symlinks, nonregular files and unexpected
 path replacement. The default location is private application storage. A
@@ -80,12 +82,24 @@ transaction open and no anchor update pending:
    and a failed restore blocks further writes in the session.
 3. Flush the copy, open it with the full §1.2 identification and hardening,
    and require byte equality of the header, header MAC, keyslots, local head,
-   replica row, snapshot index and live manifest row, plus equal row counts and
-   total stored lengths of the object and manifest tables. Any difference
+   replica row, snapshot index, archive receipts and LAN links, plus every
+   column of every object and manifest row, including full ciphertext bytes
+   in key order (bounded to one row from each file at a time). Any difference
    removes the copy and leaves the vault unchanged.
 4. Move the copy over the vault path (replacing it), flush the directory and
    reopen the session's connection at the path under the copy's lock, checking
    the header, MAC and slots again.
+
+Check cancellation while copying with SQLite's progress handler and between
+verification rows. Cancellation before replacement interrupts the statement,
+removes the copy and preserves the source. The attach limit is restored even
+after interruption. On Windows close only SQLite's source connection before
+replacement; retain both process locks through replacement and reopening, as
+on Unix. Use `FileRenameInfoEx` with replacement and POSIX semantics through
+a write-through handle, then flush that handle; do not fall back to releasing
+the source lock when the operation is unsupported. The process-lock handles
+already share delete access. A failed move
+reopens the source under its retained lock or blocks further writes.
 
 Both files are complete states with the same head, so a crash at any point
 leaves a valid vault, the external anchor is unchanged and no journal is
@@ -187,10 +201,9 @@ single transaction; anchor replacement follows durable commit before reporting
 success (0005 §5.4). A failed attempt before commit records no receipt. Retry
 after a durable commit must finish its pending anchor update first. Receipts
 are local-only and never enter an archive, portable manifest or peer exchange.
-The development schema/header version for this table is `0x7FFF0003`; older
-development files are rejected, without a migration or compatibility promise.
+The table is part of every 1.0 file (0015 §3).
 
-2.4. **LAN peer state** (0013 §9). The development layout is
+2.4. **LAN peer state** (0013 §9). The layout is
 
 ```sql
 CREATE TABLE lan_link (link_id BLOB PRIMARY KEY CHECK (length(link_id) = 16), key_generation INTEGER NOT NULL, sealed BLOB NOT NULL) STRICT, WITHOUT ROWID
@@ -215,10 +228,8 @@ Rows are never read for authentication. No peer endpoint is stored (0013
 §9.2). Every commit deletes all rows and writes the digest of the empty set
 (0013 §9.1), so a file from before 0014 clears at its next commit. Creation,
 new-path restore, new-device creation (0013 §10) and a rotation replacement
-start with no rows. The table and digest are removed at the next format
-change. The development schema/header version
-with this table is `0x7FFF0004`. Older development files are rejected,
-without a migration.
+start with no rows. The table and digest stay in the 1.0 format (0015);
+files with a header format older than `0x7FFF0004` are rejected.
 
 2.5. **Local snapshots inside the vault (plan 0059).** A local snapshot is a
 retained manifest in this file, not a copy of the vault (0007 §3.1). One
@@ -284,8 +295,8 @@ read and archive verification. Marked dominated tombstones remain retained
 history even at/below the history floor; no other covered history is valid.
 Ordinary unlock authenticates marked historical tombstones as well as heads.
 Pruning, purge and later final deletion MUST preserve all such roles/objects;
-rotation preserves their markers. The volatile manifest format is 0x7FFF0002
-(no migration); combined receipt/acceptance schema/header remains 0x7FFF0003.
+rotation preserves their markers. The manifest format is `0x7FFF0002`
+(0015 §4.4).
 
 3.5. `manifest_hash = SHA256(canonical manifest envelope including ciphertext)`.
 `reference_digest = SHA256(canonical sorted reference list)`; publish the list
@@ -386,6 +397,13 @@ streamed length, not provider metadata. Apply all ordinary identification,
 SQLite hardening, password/header authentication and complete content validation
 before publication. Staging has a source-only anchor context; never consult or
 change another local replica's anchor because of the imported identity.
+
+Before staging beyond the first 100 bytes, check the public SQLite magic,
+4096-byte page size and nonzero declared page count within `MAX_DB_BYTES`.
+Require actual length to equal that declared size; reject truncation and probe
+at most one extra byte for overrun without writing it. These unauthenticated
+header checks only reject obviously unsuitable input early, and never replace
+the authentication and complete validation above.
 
 The selected document is never changed. Require explicit acknowledgement that
 its freshness is unestablished and that QuickVault will edit an independent
@@ -560,10 +578,23 @@ is unsupported ([SQLite warning](https://www.sqlite.org/howtocorrupt.html)).
 
 ## Open Questions
 
-1. Benchmark budgets on supported mobile devices before freezing the first
-   format. Changes require documented policy/version updates.
+1. ~~Benchmark budgets on supported mobile devices before freezing the first
+   format.~~ Resolved 2026-11-16 (owner-delegated, plan 0064): the budgets
+   are frozen as they are, on the host measurements of plan 0053 and the
+   owner's use of the app on their Android test phone; no measured phone run
+   exists. A later change is a documented policy/version update (0015 §1.5).
 
 ## Changelog
+
+- 2026-11-16: §1.4: compare complete compaction ciphertext, interrupt copying
+  on cancellation, and retain the Windows source process lock (plan 0065).
+- 2026-11-16: §5.4: reject unsuitable picked streams at the fixed SQLite
+  header and bound actual staging by its declared page count (plan 0065).
+
+- 2026-11-16: Formats frozen at 1.0 as they are (owner, plan 0064 Decision 1
+  C); registered in 0015; "development"/"volatile" wording removed from §1.1,
+  §2.3, §2.4 and §3.4; the stale receipt-version sentence in §3.4 dropped;
+  Open Question 1 resolved.
 
 - 2026-11-15: §1.4 compaction (`VACUUM INTO` a private temporary sibling,
   verified, moved over the vault; automatic after large frees and on request);

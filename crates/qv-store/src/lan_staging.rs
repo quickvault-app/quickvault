@@ -76,6 +76,8 @@ pub struct LanStaging {
     plan: Vec<(ObjectId, Planned)>,
     manifest: Manifest,
     next: usize,
+    peer_received: u64,
+    peer_total: u64,
 }
 
 impl core::fmt::Debug for LanStaging {
@@ -184,9 +186,16 @@ impl LanStaging {
             .filter(|t| *t <= MAX_ARCHIVE_TOTAL_LENGTH)
             .ok_or(StoreError::LimitExceeded)?;
         let mut plan = Vec::with_capacity(references.len());
+        let mut peer_total = 0u64;
         for r in references {
             check_cancel(cancelled)?;
-            plan.push((r.object_id(), plan_of(r)?));
+            let source = plan_of(r)?;
+            if source == Planned::Peer {
+                peer_total = peer_total
+                    .checked_add(r.length())
+                    .ok_or(StoreError::LimitExceeded)?;
+            }
+            plan.push((r.object_id(), source));
         }
         let header = ArchiveHeader::for_staging(
             vault,
@@ -228,6 +237,8 @@ impl LanStaging {
             plan,
             manifest,
             next: 0,
+            peer_received: 0,
+            peer_total,
         })
     }
 
@@ -248,19 +259,7 @@ impl LanStaging {
     /// Ciphertext bytes of the objects requested from the peer: staged so
     /// far, and in total (progress display only, plan 0059).
     pub fn peer_bytes(&self) -> (u64, u64) {
-        let refs = self.manifest.references();
-        let mut done = 0u64;
-        let mut total = 0u64;
-        for (i, (_, planned)) in self.plan.iter().enumerate() {
-            if *planned == Planned::Peer {
-                let len = refs.get(i).map_or(0, ObjectRef::length);
-                total = total.saturating_add(len);
-                if i < self.next {
-                    done = done.saturating_add(len);
-                }
-            }
-        }
-        (done, total)
+        (self.peer_received, self.peer_total)
     }
 
     /// Where the next object comes from, or `None` once every planned
@@ -309,6 +308,11 @@ impl LanStaging {
         let reference = &self.manifest.references()[self.next];
         object_envelope(envelope, &self.header, reference)?;
         crate::archive::write_frame(&mut self.file, envelope)?;
+        if source == Planned::Peer {
+            // The complete manifest sum was checked against the staging cap
+            // before any file existed; each reference is appended once.
+            self.peer_received += reference.length();
+        }
         self.next += 1;
         Ok(())
     }

@@ -1,4 +1,4 @@
-# status: development-only; regenerated freely until roadmap phase 1.16
+# status: frozen at 1.0 (spec 0015 §6); never regenerated
 # Padmé (0004 §3.2), computed by crosscheck.py. Integers are 8-byte big-endian.
 
 n = 0000000000000004

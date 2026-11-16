@@ -6,7 +6,7 @@
 //! previous_digest, manifest_hash, remote_checkpoint_id?, remote_sequence?,
 //! archive_receipts_digest, lan_links_digest, snapshot_index_digest? }`,
 //! MAC'd under the `local-state` purpose key. Body (canonical CBOR map;
-//! unknown keys fail closed). Development values, volatile until the pre-1.0 freeze:
+//! unknown keys fail closed). 1.0 values (frozen, spec 0015 §4.5):
 //!
 //! | Key | Field | CBOR |
 //! |-----|-------|------|
@@ -63,7 +63,7 @@ pub(crate) struct Anchor {
     pub(crate) local_digest: [u8; 32],
 }
 
-/// The head-MAC transcript label (development value).
+/// The head-MAC transcript label (frozen at 1.0).
 const MAC_LABEL: &str = "qv/local-head/v1";
 
 /// Largest stored head body.

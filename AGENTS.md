@@ -93,8 +93,9 @@ requests override the named intermediate commit/session boundary.
 - Tests that cover a 0012 §1 offline row carry `// 0012 §1: <exact row>`
   above their attributes; `sh scripts/check-matrix.sh` (CI) checks the rows
   in `scripts/matrix-offline.txt`; it includes untracked Rust sources and skips
-  deleted paths so unstaged work is checked. Pre-1.0, formats stay volatile: no freeze
-  until the owner says so.
+  deleted paths so unstaged work is checked. Formats are frozen at 1.0
+  (`specs/0015-format-registry.md`): a change to a registered value, key or
+  layout needs a new format version and an owner decision.
 - Dependency changes: justify in the plan, run `cargo deny check` and
   `cargo vet --locked` (0012 §3), retain `Cargo.lock` changes for owner commit,
   minimize security-critical crates. CI uses GitHub Actions, actions pinned

@@ -296,6 +296,13 @@ class MainActivity : WryActivity() {
     @Volatile private var pickedName: String? = null
     /** The provider's reported size of the pick, or -1; only for a warning. */
     @Volatile private var pickedSize: Long = -1
+    // The one open document stream, guarded by this activity's monitor. Each
+    // open gets a fresh handle; read, write and close act only on a matching
+    // handle, so a stale reader or writer cannot touch a newer stream (plan
+    // 0049 review finding 3). Blocking provider I/O runs outside the monitor.
+    private var streamSeq = 0L
+    private var streamId = 0L
+    private var streamPick = 0L
     private var reader: java.io.InputStream? = null
     private var writer: java.io.FileOutputStream? = null
     private var writerFd: android.os.ParcelFileDescriptor? = null
@@ -340,48 +347,100 @@ class MainActivity : WryActivity() {
     fun qvPickState(id: Long): Int = if (id == pickId) pickState else 2
     fun qvPickedName(): String? = pickedName?.take(255)
     fun qvPickedSize(): Long = pickedSize
-    fun qvOpenRead(id: Long): Boolean {
-        qvCloseDoc(false)
-        val uri = pickedUri ?: return false
-        if (id != pickId || pickState != 1) return false
-        reader = try { contentResolver.openInputStream(uri) } catch (e: Exception) { null }
-        return reader != null
+    private class DocStream(
+        val reader: java.io.InputStream?,
+        val writer: java.io.FileOutputStream?,
+        val writerFd: android.os.ParcelFileDescriptor?,
+    )
+    /** Detach the open stream; the caller holds the monitor and closes it outside. */
+    private fun detachStream(): DocStream? {
+        if (streamId == 0L) return null
+        val open = DocStream(reader, writer, writerFd)
+        streamId = 0L; streamPick = 0L; reader = null; writer = null; writerFd = null
+        return open
     }
-    fun qvRead(max: Int): ByteArray? {
-        val input = reader ?: return null
-        val buffer = ByteArray(max.coerceIn(1, 65536))
-        val n = try { input.read(buffer) } catch (e: Exception) { return null }
-        if (n <= 0) return ByteArray(0)
-        return buffer.copyOf(n).also { java.util.Arrays.fill(buffer, 0) }
-    }
-    fun qvOpenWrite(id: Long): Boolean {
-        qvCloseDoc(false)
-        val uri = pickedUri ?: return false
-        if (id != pickId || pickState != 1) return false
-        writerFd = try { contentResolver.openFileDescriptor(uri, "wt") } catch (e: Exception) { null }
-        writer = writerFd?.let { java.io.FileOutputStream(it.fileDescriptor) }
-        return writer != null
-    }
-    fun qvWrite(bytes: ByteArray): Boolean = try { writer?.write(bytes); java.util.Arrays.fill(bytes, 0); writer != null } catch (e: Exception) { false }
-    fun qvCloseDoc(sync: Boolean): Boolean {
+    private fun closeStream(open: DocStream?, sync: Boolean): Boolean {
+        if (open == null) return true
         var ok = true
-        try { reader?.close() } catch (e: Exception) { ok = false }
-        try { writer?.let { it.flush(); if (sync) it.fd.sync(); it.close() } } catch (e: Exception) { ok = false }
-        try { writerFd?.close() } catch (e: Exception) { ok = false }
-        reader = null; writer = null; writerFd = null
+        try { open.reader?.close() } catch (e: Exception) { ok = false }
+        try { open.writer?.let { it.flush(); if (sync) it.fd.sync(); it.close() } } catch (e: Exception) { ok = false }
+        try { open.writerFd?.close() } catch (e: Exception) { ok = false }
         return ok
     }
-    fun qvForgetPick() {
-        synchronized(this) { pickState = 2; pickedUri = null; pickedName = null }
-        qvCloseDoc(false)
-    }
-    // An old reader/result cannot clear a newer selection. Synchronize the
-    // ID check with picker creation and result publication, not blocking I/O.
-    fun qvForgetPickFor(id: Long) {
-        val active = synchronized(this) {
-            if (id != pickId) false else { pickState = 2; pickedUri = null; pickedName = null; true }
+    /**
+     * Install a freshly opened stream as the only open one and return its
+     * handle, or 0 (closing it) when the pick was forgotten meanwhile.
+     */
+    private fun installStream(id: Long, opened: DocStream): Long {
+        var replaced: DocStream? = null
+        val handle = synchronized(this) {
+            if (id != pickId || pickState != 1 || streamSeq == Long.MAX_VALUE) 0L else {
+                replaced = detachStream()
+                streamSeq += 1; streamId = streamSeq; streamPick = id
+                reader = opened.reader; writer = opened.writer; writerFd = opened.writerFd
+                streamId
+            }
         }
-        if (active) qvCloseDoc(false)
+        closeStream(replaced, false)
+        if (handle == 0L) closeStream(opened, false)
+        return handle
+    }
+    /** Open the pick for reading; returns the stream handle, or 0. */
+    fun qvOpenRead(id: Long): Long {
+        val (uri, previous) = synchronized(this) {
+            if (id != pickId || pickState != 1) return 0L
+            Pair(pickedUri ?: return 0L, detachStream())
+        }
+        closeStream(previous, false)
+        val input = try { contentResolver.openInputStream(uri) } catch (e: Exception) { null } ?: return 0L
+        return installStream(id, DocStream(input, null, null))
+    }
+    fun qvRead(handle: Long, max: Int): ByteArray? {
+        val input = synchronized(this) { if (handle != 0L && handle == streamId) reader else null } ?: return null
+        val buffer = ByteArray(max.coerceIn(1, 65536))
+        try {
+            val n = try { input.read(buffer) } catch (e: Exception) { return null }
+            if (n <= 0) return ByteArray(0)
+            return buffer.copyOf(n)
+        } finally { java.util.Arrays.fill(buffer, 0) }
+    }
+    /** Open the pick for writing (truncating); returns the stream handle, or 0. */
+    fun qvOpenWrite(id: Long): Long {
+        val (uri, previous) = synchronized(this) {
+            if (id != pickId || pickState != 1) return 0L
+            Pair(pickedUri ?: return 0L, detachStream())
+        }
+        closeStream(previous, false)
+        val fd = try { contentResolver.openFileDescriptor(uri, "wt") } catch (e: Exception) { null } ?: return 0L
+        return installStream(id, DocStream(null, java.io.FileOutputStream(fd.fileDescriptor), fd))
+    }
+    fun qvWrite(handle: Long, bytes: ByteArray): Boolean {
+        try {
+            val output = synchronized(this) { if (handle != 0L && handle == streamId) writer else null } ?: return false
+            output.write(bytes)
+            return true
+        } catch (e: Exception) {
+            return false
+        } finally { java.util.Arrays.fill(bytes, 0) }
+    }
+    /** Close stream [handle] if it is still the open one; false otherwise or on error. */
+    fun qvCloseDoc(handle: Long, sync: Boolean): Boolean {
+        val open = synchronized(this) { if (handle != 0L && handle == streamId) detachStream() else null } ?: return false
+        return closeStream(open, sync)
+    }
+    fun qvForgetPick() {
+        val open = synchronized(this) { pickState = 2; pickedUri = null; pickedName = null; detachStream() }
+        closeStream(open, false)
+    }
+    // An old reader/result cannot clear a newer selection or close a stream
+    // opened from another pick. Synchronize the ID check with picker creation,
+    // result publication and stream installation, not blocking I/O.
+    fun qvForgetPickFor(id: Long) {
+        val open = synchronized(this) {
+            if (id == pickId) { pickState = 2; pickedUri = null; pickedName = null }
+            if (streamPick == id) detachStream() else null
+        }
+        closeStream(open, false)
     }
 
     fun qvGeneration(): Long = lifecycleGeneration

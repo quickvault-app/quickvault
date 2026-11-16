@@ -674,3 +674,316 @@ fn payload_keyslot_standalone_codec() {
         Some(ModelError::Malformed)
     );
 }
+
+/// The record versions of every kind, as frozen at 1.0 (spec 0015 §5, plan
+/// 0064): each sample's canonical bytes must equal the golden file, and the
+/// codec must decode and re-encode them unchanged. Never regenerate the file:
+/// a change here is a format change.
+#[test]
+fn records_match_the_frozen_golden_encodings() {
+    let generator = map(&[
+        (0, uint(0)),
+        (1, uint(20)),
+        (2, boolean(true)),
+        (3, boolean(true)),
+        (4, boolean(true)),
+        (5, boolean(false)),
+        (6, boolean(true)),
+        (7, text("O0")),
+        (8, boolean(true)),
+    ]);
+    let settings = map(&[
+        (0, uint(5)),
+        (1, uint(14)),
+        (2, generator),
+        (3, uint(1_700_000_000_001)),
+    ]);
+    let vault_meta = vec![
+        (0, text("Vault")),
+        (1, text("Desc")),
+        (2, bytes(&v4(0x02))),
+        (3, settings),
+    ];
+    let keyslot = vec![
+        (0, bytes(&v4(0x03))),
+        (1, uint(1)),
+        (2, bytes(&[0x11; 32])),
+        (3, uint(1)),
+        (4, bytes(&[0x22; 32])),
+        (5, bytes(&[0x33; 24])),
+        (6, bytes(&[0x44; 48])),
+    ];
+    let group_full = [
+        group_payload(Some(v4(0x02))),
+        vec![
+            (2, text("n")),
+            (3, text("folder")),
+            (5, int(1_700_000_000_002)),
+            (6, bytes(&v4(0x0d))),
+        ],
+    ]
+    .concat();
+    let fields: Vec<Vec<u8>> = [
+        (0u64, "Username", text("user"), false),
+        (1, "Password", text("pw"), true),
+        (2, "Website", text("https://example.invalid"), false),
+        (3, "Email", text("a@example.invalid"), false),
+        (
+            4,
+            "TOTP",
+            text("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP"),
+            true,
+        ),
+        (5, "Note", text("line 1\nline 2"), false),
+        (6, "Expires", text("2030-01"), false),
+        (0, "Raw", bytes(&[0, 1, 2]), false),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (kind, name, value, protected))| {
+        let mut id = v4(0x20);
+        id[15] = i as u8;
+        field_map(id, name, kind, value, protected)
+    })
+    .collect();
+    let entry_full = [
+        entry_payload(fields),
+        vec![
+            (4, text("notes")),
+            (5, text("key")),
+            (6, int(1_900_000_000_000)),
+            (9, int(1_700_000_000_003)),
+            (10, bytes(&v4(0x0e))),
+        ],
+    ]
+    .concat();
+    let samples: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "vault_meta",
+            map(&envelope(0, false, Some(map(&vault_meta)))),
+        ),
+        (
+            "group_root",
+            map(&envelope(1, false, Some(map(&group_payload(None))))),
+        ),
+        (
+            "group_full",
+            map(&envelope(1, false, Some(map(&group_full)))),
+        ),
+        (
+            "entry_empty",
+            map(&envelope(2, false, Some(map(&entry_payload(vec![]))))),
+        ),
+        (
+            "entry_full",
+            map(&envelope(2, false, Some(map(&entry_full)))),
+        ),
+        (
+            "attachment_meta",
+            map(&envelope(
+                3,
+                false,
+                Some(map(&attachment_payload(
+                    CHUNK_SIZE + 1,
+                    &[v4(0x30), v4(0x31)],
+                ))),
+            )),
+        ),
+        (
+            "password_keyslot",
+            map(&envelope(4, false, Some(map(&keyslot)))),
+        ),
+        ("entry_tombstone", map(&envelope(2, true, None))),
+        (
+            "two_writer_clock",
+            map(&with(
+                &envelope(1, false, Some(map(&group_payload(None)))),
+                2,
+                item(|e| {
+                    e.array(|a| {
+                        for (w, c) in [(v4(0xb1), 3u64), (v4(0xb2), 1)] {
+                            a.array(|p| {
+                                p.bytes(&w);
+                                p.uint(c);
+                                Ok(())
+                            })?;
+                        }
+                        Ok(())
+                    })
+                    .unwrap()
+                }),
+            )),
+        ),
+    ];
+    let golden: Vec<(&str, &str)> = include_str!("../../tests/golden/records.txt")
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.split_once(' ').unwrap())
+        .collect();
+    let hex = |b: &[u8]| b.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let actual: Vec<String> = samples
+        .iter()
+        .map(|(n, b)| format!("{n} {}", hex(b)))
+        .collect();
+    let expected: Vec<String> = golden.iter().map(|(n, h)| format!("{n} {h}")).collect();
+    assert_eq!(actual, expected, "actual:\n{}", actual.join("\n"));
+    for (_, b) in &samples {
+        round_trip(b);
+    }
+    golden_meanings(&samples);
+}
+
+/// What each golden sample means once decoded: every key lands in the field
+/// the registry names, and nothing is left over as an unknown key, so a
+/// renumbered optional key or a swapped code fails here even though the
+/// bytes still round-trip (review of plan 0064, finding 1).
+fn golden_meanings(samples: &[(&str, Vec<u8>)]) {
+    let get = |name: &str| {
+        let (_, b) = samples.iter().find(|(n, _)| *n == name).unwrap();
+        let v = RecordVersion::decode(b).unwrap();
+        assert!(v.ext.is_empty(), "{name}: unknown record keys");
+        assert_eq!(v.version_id, vid(0xa1));
+        assert_eq!(v.modified_at, Timestamp(1_700_000_000_000));
+        v
+    };
+    let live = |name: &str| match get(name).body {
+        RecordBody::Live(p) => p,
+        RecordBody::Tombstone(_) => panic!("{name} is a tombstone"),
+    };
+    let text = |t: &Option<Text>| t.as_ref().map(|t| t.expose().to_owned());
+
+    let Payload::VaultMeta(m) = live("vault_meta") else {
+        panic!("vault_meta")
+    };
+    assert_eq!(m.name.expose(), "Vault");
+    assert_eq!(text(&m.description).as_deref(), Some("Desc"));
+    assert_eq!(m.root_group, rid(0x02));
+    assert!(m.ext.is_empty() && m.settings.ext.is_empty());
+    assert_eq!(m.settings.history_depth, Some(5));
+    assert_eq!(m.settings.trash_retention_days, Some(14));
+    assert_eq!(
+        m.settings.recovery_skipped_at,
+        Some(Timestamp(1_700_000_000_001))
+    );
+    let g = m.settings.generator.as_ref().unwrap();
+    assert!(g.ext.is_empty());
+    let qv_crypto::GeneratorSettings::Characters(c) = &g.settings else {
+        panic!("generator mode")
+    };
+    assert_eq!(
+        (
+            c.length,
+            c.lowercase,
+            c.uppercase,
+            c.digits,
+            c.symbols,
+            c.exclude_ambiguous,
+            c.exclude_chars.as_str(),
+            c.require_each_class
+        ),
+        (20, true, true, true, false, true, "O0", true)
+    );
+
+    let Payload::Group(g) = live("group_root") else {
+        panic!("group_root")
+    };
+    assert_eq!(
+        (g.parent, g.name.expose(), g.order.expose()),
+        (None, "G", "a0")
+    );
+    assert!(g.notes.is_none() && g.icon.is_none() && g.deleted_at.is_none());
+    let Payload::Group(g) = live("group_full") else {
+        panic!("group_full")
+    };
+    assert!(g.ext.is_empty());
+    assert_eq!(g.parent, Some(rid(0x02)));
+    assert_eq!(text(&g.notes).as_deref(), Some("n"));
+    assert_eq!(text(&g.icon).as_deref(), Some("folder"));
+    assert_eq!(g.deleted_at, Some(Timestamp(1_700_000_000_002)));
+    assert!(g.delete_operation.is_some());
+
+    let Payload::Entry(e) = live("entry_empty") else {
+        panic!("entry_empty")
+    };
+    assert!(e.fields.is_empty() && e.notes.is_none() && e.expires_at.is_none());
+    let Payload::Entry(e) = live("entry_full") else {
+        panic!("entry_full")
+    };
+    assert!(e.ext.is_empty());
+    assert_eq!(
+        (e.group, e.type_hint.expose(), e.title.expose()),
+        (rid(0x10), "login", "Example")
+    );
+    assert_eq!((e.created_at, e.modified_at), (Timestamp(1), Timestamp(2)));
+    assert_eq!(text(&e.notes).as_deref(), Some("notes"));
+    assert_eq!(text(&e.icon).as_deref(), Some("key"));
+    assert_eq!(e.expires_at, Some(Timestamp(1_900_000_000_000)));
+    assert_eq!(e.deleted_at, Some(Timestamp(1_700_000_000_003)));
+    assert!(e.delete_operation.is_some());
+    let expected = [
+        ("Username", FieldKind::Text, false, Some("user")),
+        ("Password", FieldKind::Secret, true, Some("pw")),
+        (
+            "Website",
+            FieldKind::Url,
+            false,
+            Some("https://example.invalid"),
+        ),
+        ("Email", FieldKind::Email, false, Some("a@example.invalid")),
+        (
+            "TOTP",
+            FieldKind::Totp,
+            true,
+            Some("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP"),
+        ),
+        ("Note", FieldKind::Multiline, false, Some("line 1\nline 2")),
+        ("Expires", FieldKind::Date, false, Some("2030-01")),
+        ("Raw", FieldKind::Text, false, None),
+    ];
+    assert_eq!(e.fields.len(), expected.len());
+    for (i, (f, (name, kind, protected, value))) in e.fields.iter().zip(expected).enumerate() {
+        let mut id = v4(0x20);
+        id[15] = i as u8;
+        assert!(f.ext.is_empty());
+        assert_eq!(f.id, crate::FieldId::from_bytes(id).unwrap());
+        assert_eq!(
+            (f.name.expose(), f.kind, f.protected),
+            (name, kind, protected)
+        );
+        match (&f.value, value) {
+            (FieldValue::Text(t), Some(v)) => assert_eq!(t.expose_secret(), v),
+            (FieldValue::Bytes(b), None) => assert_eq!(b.expose_secret(), &[0, 1, 2]),
+            _ => panic!("{name}: value type"),
+        }
+    }
+
+    let Payload::AttachmentMeta(a) = live("attachment_meta") else {
+        panic!("attachment_meta")
+    };
+    assert!(a.ext.is_empty());
+    assert_eq!(
+        (a.entry, a.name.expose(), a.mime.expose(), a.size),
+        (rid(0x10), "a.txt", "text/plain", CHUNK_SIZE + 1)
+    );
+    assert_eq!(a.chunk_object_ids, vec![oid(0x30), oid(0x31)]);
+    assert_eq!(a.content_hash, [0x5a; 32]);
+
+    let Payload::PasswordKeyslot(k) = live("password_keyslot") else {
+        panic!("password_keyslot")
+    };
+    assert!(k.ext.is_empty());
+    assert_eq!(k.slot.slot_id.0, v4(0x03));
+    assert_eq!(k.slot.kdf_profile, qv_crypto::PasswordKdfProfile::V1);
+    assert_eq!(k.slot.wrap_profile, qv_crypto::PasswordWrapProfile::V1);
+    assert_eq!(k.slot.kdf_salt, [0x11; 32]);
+    assert_eq!(k.slot.kek_commit.as_bytes(), &[0x22; 32]);
+    assert_eq!(k.slot.nonce, [0x33; 24]);
+    assert_eq!(k.slot.wrapped_vk, [0x44; 48]);
+
+    let t = get("entry_tombstone");
+    assert_eq!(t.deletion(), Deletion::Final);
+    assert!(matches!(t.body, RecordBody::Tombstone(RecordKind::Entry)));
+    let c = get("two_writer_clock");
+    let w = |n| crate::WriterId::from_bytes(v4(n)).unwrap();
+    assert_eq!(c.clock.pairs(), &[(w(0xb1), 3), (w(0xb2), 1)]);
+}

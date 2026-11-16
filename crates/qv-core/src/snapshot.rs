@@ -198,16 +198,18 @@ fn record_outcome(open: &mut Open, outcome: &qv_store::SnapshotOutcome) {
 /// After a successful mutation: compact the file when its free pages reach
 /// [`AUTO_COMPACT_MIN_BYTES`] and a quarter of it (0004 §1.4). Best effort:
 /// any failure (too little disk space, a pending anchor) leaves the vault as
-/// it is, and a later commit tries again.
-pub(crate) fn auto_compact(open: &mut Open) {
-    if open.read_only {
+/// it is, and a later commit tries again. A lock request (`cancelled`)
+/// interrupts the copy through SQLite's progress handler and discards it
+/// before replacement (review of plan 0060, finding 3).
+pub(crate) fn auto_compact(open: &mut Open, cancelled: &dyn Fn() -> bool) {
+    if open.read_only || cancelled() {
         return;
     }
     if let Ok((file, free)) = open.vault.file_pages()
         && free >= AUTO_COMPACT_MIN_BYTES
         && free.saturating_mul(4) >= file
     {
-        let _ = open.vault.compact(&|| false);
+        let _ = open.vault.compact(cancelled);
     }
 }
 
@@ -1032,7 +1034,9 @@ impl Session {
             return Err(CoreError::InvalidInput);
         }
         let id = id.to_ascii_lowercase();
-        let result = self.mutate(|ctx| {
+        // This publishes a separate file, but does not mutate/compact the
+        // source. Preserve a completed publication if a lock arrives later.
+        let result = self.run(|ctx| {
             ctx.check_cancel()?;
             if cancel.is_some_and(CancelToken::is_cancelled) {
                 return Err(CoreError::Cancelled);

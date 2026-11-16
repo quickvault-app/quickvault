@@ -224,6 +224,16 @@ impl Session {
         options: SyncOptions,
         cancel: Option<&CancelToken>,
     ) -> Result<SyncReport, CoreError> {
+        self.sync_until(code, options, cancel, Instant::now() + PAIRING_WINDOW_MAX)
+    }
+
+    fn sync_until(
+        &self,
+        code: JoinCode,
+        options: SyncOptions,
+        cancel: Option<&CancelToken>,
+        expires: Instant,
+    ) -> Result<SyncReport, CoreError> {
         options
             .timeouts
             .validate()
@@ -231,11 +241,11 @@ impl Session {
         self.writable()?;
         let joiner = SessionJoiner {
             session: self,
-            exchange: SessionExchange::new(self, cancel, None)?,
+            exchange: SessionExchange::new(self, cancel, Some(expires))?,
         };
         let cancelled =
             || self.locking.load(Ordering::SeqCst) || cancel.is_some_and(CancelToken::is_cancelled);
-        let round = sync::sync_with_code(
+        let round = sync::sync_with_code_until(
             code,
             &options.extra_endpoints,
             EndpointPolicy {
@@ -244,6 +254,7 @@ impl Session {
             &joiner,
             &options.timeouts,
             &cancelled,
+            expires,
         )
         .map_err(CoreError::Lan)?;
         joiner.exchange.report(round)
@@ -855,3 +866,66 @@ mod repair_tests {
 
 #[path = "lan_auth.rs"]
 mod auth;
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    use crate::testutil::{Env, add_entry};
+    use std::net::TcpListener;
+
+    // 0012 §1: Unrequested synchronization
+    #[test]
+    fn lan_initiator_deadline_covers_connect_and_local_acceptance() {
+        let env = Env::new();
+        let (a, b) = crate::lan_tests::replicas(&env);
+        add_entry(&a, a.root().unwrap(), "arrived after expiry");
+        let source = SessionExchange::new(&a, None, None).unwrap();
+        let before = b.overview().unwrap().local_seq;
+        let state = source.serve_state().unwrap();
+        let receiver = SessionExchange::new(&b, None, None).unwrap();
+        let mut staging = receiver
+            .stage(state.manifest_hash(), state.envelope())
+            .unwrap();
+        let mut requested = staging.requested().into_iter();
+        while let Some(next) = staging.next() {
+            match next {
+                qv_store::Planned::Local => receiver.stage_local(&mut staging).unwrap(),
+                qv_store::Planned::Peer => {
+                    let bytes = source.object(&state, requested.next().unwrap()).unwrap();
+                    staging.add_object(&bytes).unwrap();
+                }
+            }
+        }
+        let expired = Instant::now() - Duration::from_secs(1);
+        let receiver = SessionExchange::new(&b, None, Some(expired)).unwrap();
+        assert_eq!(receiver.accept(staging).err(), Some(LanError::Cancelled));
+        assert_eq!(b.overview().unwrap().local_seq, before);
+        assert!(b.verify(None).unwrap().ok());
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let options = SyncOptions {
+            extra_endpoints: vec![listener.local_addr().unwrap()],
+            allow_loopback: true,
+            ..SyncOptions::default()
+        };
+        let window = a
+            .open_sync_window(SyncWindowOptions {
+                scope: ListenScope::LoopbackForTests,
+                ..SyncWindowOptions::new()
+            })
+            .unwrap();
+        let code = window.code(&[]).unwrap();
+        let code = std::str::from_utf8(code.manual.expose_secret()).unwrap();
+        assert_eq!(
+            b.sync_until(JoinCode::from_manual(code).unwrap(), options, None, expired)
+                .err(),
+            Some(CoreError::Lan(LanError::Timeout))
+        );
+        assert_eq!(
+            listener.accept().err().unwrap().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(b.overview().unwrap().local_seq, before);
+    }
+}

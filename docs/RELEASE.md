@@ -18,8 +18,9 @@ gate has not passed is disabled or left out of the release.
    recorded results.
 5. Set the workspace version in `Cargo.toml` (`[workspace.package]
    version`), run `cargo update --workspace --offline` so `Cargo.lock`
-   follows, and move the `CHANGELOG.md` "Unreleased" entries under the new
-   version with the date.
+   follows (also `fuzz/Cargo.toml` and `fuzz/Cargo.lock`), move the
+   `CHANGELOG.md` "Unreleased" entries under the new version with the date,
+   and write the release notes (below).
 
 ## Artifacts
 
@@ -77,7 +78,8 @@ asset.
 
 ## Release notes
 
-Record with each release (0012 §3):
+Write them in `docs/release-notes/<version>.md` before tagging; the release
+workflow uses that file as the release body. Record (0012 §3):
 - the commit, tag and toolchain (`rust-toolchain.toml`);
 - pinned dependencies (`Cargo.lock`) and the `cargo deny`/`cargo vet`
   results, with the audit status of the security-critical crates

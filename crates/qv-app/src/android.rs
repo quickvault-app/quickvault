@@ -230,8 +230,41 @@ pub(crate) fn picked_name() -> Option<String> {
     .ok()
     .flatten()
 }
+/// One open Kotlin document stream. Every read, write and close names its
+/// handle, and Kotlin acts only while that handle is the open stream, so a
+/// stale reader or writer cannot read, write or close a newer stream (plan
+/// 0049 review finding 3). Dropping it closes only its own stream, unsynced;
+/// a stream already closed (finished, replaced or forgotten by a lock) is
+/// left alone.
+struct DocStream(i64);
+impl DocStream {
+    fn close(&self, sync: bool) -> Result<bool, AppError> {
+        call(|env, a| {
+            env.call_method(
+                a,
+                "qvCloseDoc",
+                "(JZ)Z",
+                &[JValue::Long(self.0), JValue::Bool(u8::from(sync))],
+            )?
+            .z()
+        })
+    }
+}
+impl Drop for DocStream {
+    fn drop(&mut self) {
+        let _ = self.close(false);
+    }
+}
+/// Open the picked document for reading (`write == false`) or truncating
+/// output; `None` when Kotlin refused (no matching completed pick).
+fn open_stream(id: i64, write: bool) -> Result<Option<DocStream>, AppError> {
+    let method = if write { "qvOpenWrite" } else { "qvOpenRead" };
+    let handle = call(|env, a| env.call_method(a, method, "(J)J", &[JValue::Long(id)])?.j())?;
+    Ok((handle > 0).then_some(DocStream(handle)))
+}
 /// Bounded chunked reader over the picked document.
 struct DocReader {
+    stream: DocStream,
     left: u64,
     token: CancelToken,
 }
@@ -243,7 +276,12 @@ impl Read for DocReader {
         let want = i32::try_from(out.len().min(CHUNK as usize)).unwrap_or(CHUNK);
         let mut bytes = call(|env, a| {
             let array = env
-                .call_method(a, "qvRead", "(I)[B", &[JValue::Int(want)])?
+                .call_method(
+                    a,
+                    "qvRead",
+                    "(JI)[B",
+                    &[JValue::Long(self.stream.0), JValue::Int(want)],
+                )?
                 .l()?;
             if array.is_null() {
                 return Ok(None);
@@ -265,14 +303,6 @@ impl Read for DocReader {
         Ok(n)
     }
 }
-impl Drop for DocReader {
-    fn drop(&mut self) {
-        let _ = call(|env, a| {
-            env.call_method(a, "qvCloseDoc", "(Z)Z", &[JValue::Bool(0)])
-                .map(|_| ())
-        });
-    }
-}
 /// Open the picked input document with its default name.
 pub(crate) fn read_document(
     id: u64,
@@ -281,20 +311,18 @@ pub(crate) fn read_document(
 ) -> Result<(Box<dyn Read + Send>, Zeroizing<String>), AppError> {
     let id = i64::try_from(id).map_err(|_| AppError::InvalidInput)?;
     let name = picked_name().unwrap_or_else(|| "attachment".into());
-    let opened = call(|env, a| {
-        env.call_method(a, "qvOpenRead", "(J)Z", &[JValue::Long(id)])?
-            .z()
-    })?;
-    if !opened {
-        return Err(AppError::InvalidInput);
-    }
+    let stream = open_stream(id, false)?.ok_or(AppError::InvalidInput)?;
     let reader = DocReader {
+        stream,
         left: max,
         token: token.clone(),
     };
     Ok((Box::new(reader), Zeroizing::new(name)))
 }
+/// Chunked writer into the picked document; its stream is shared with the
+/// finishing close, and an unfinished writer closes it unsynced on drop.
 struct DocWriter {
+    stream: Arc<DocStream>,
     token: CancelToken,
 }
 
@@ -333,8 +361,13 @@ impl Write for DocWriter {
         let n = bytes.len().min(CHUNK as usize);
         let ok = call(|env, a| {
             let array = env.byte_array_from_slice(&bytes[..n])?;
-            env.call_method(a, "qvWrite", "([B)Z", &[JValue::Object(&array)])?
-                .z()
+            env.call_method(
+                a,
+                "qvWrite",
+                "(J[B)Z",
+                &[JValue::Long(self.stream.0), JValue::Object(&array)],
+            )?
+            .z()
         })
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?;
         if !ok {
@@ -349,22 +382,17 @@ impl Write for DocWriter {
 /// Create plaintext output into the picked document; finishing syncs it.
 pub(crate) fn write_document(id: u64, token: &CancelToken) -> Result<Output, AppError> {
     let id = i64::try_from(id).map_err(|_| AppError::InvalidInput)?;
-    let opened = call(|env, a| {
-        env.call_method(a, "qvOpenWrite", "(J)Z", &[JValue::Long(id)])?
-            .z()
-    })?;
-    if !opened {
-        return Err(AppError::InvalidInput);
-    }
+    let stream = Arc::new(open_stream(id, true)?.ok_or(AppError::InvalidInput)?);
+    let own = Arc::clone(&stream);
     Ok(Output::new(
         Box::new(DocWriter {
+            stream,
             token: token.clone(),
         }),
-        Box::new(|| {
-            let ok = call(|env, a| {
-                env.call_method(a, "qvCloseDoc", "(Z)Z", &[JValue::Bool(1)])?
-                    .z()
-            })?;
+        Box::new(move || {
+            // False when this stream is no longer the open one (a lock or a
+            // newer open closed it first): the output is not complete.
+            let ok = own.close(true)?;
             // A written destination is not reused: a later save would
             // silently overwrite it.
             forget_pick();

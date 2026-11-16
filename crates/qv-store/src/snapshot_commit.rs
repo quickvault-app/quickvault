@@ -187,20 +187,27 @@ pub(crate) fn plan(
         .references()
         .iter()
         .fold(input.live_len, |sum, r| sum.saturating_add(r.length()));
+    // Pruning for room helps only when the live data fits without any
+    // snapshot. On a nearly full disk it does not, and dropping snapshots
+    // would free nothing (their pages stay in the file): keep them, keep no
+    // new ordinary one, and let the commit succeed or fail on its own
+    // (review of plan 0060, finding 1).
+    let live_fits = crate::space::fits(live_bytes, 0, input.room);
     // Whatever was asked, prune when the snapshots no longer fit the room.
-    let over_room = match input.old {
-        Some(old) if !old.rows().is_empty() => {
-            let held = crate::space::snapshot_only_bytes(
-                input.conn,
-                old,
-                &live_ids,
-                &live_hash,
-                input.header.key_generation,
-            )?;
-            !crate::space::fits(live_bytes, held, input.room)
-        }
-        _ => false,
-    };
+    let over_room = live_fits
+        && match input.old {
+            Some(old) if !old.rows().is_empty() => {
+                let held = crate::space::snapshot_only_bytes(
+                    input.conn,
+                    old,
+                    &live_ids,
+                    &live_hash,
+                    input.header.key_generation,
+                )?;
+                !crate::space::fits(live_bytes, held, input.room)
+            }
+            _ => false,
+        };
     if request.is_empty() && !over_room {
         return Ok(None);
     }
@@ -305,7 +312,7 @@ pub(crate) fn plan(
             .fold(stored_len(input.conn, &replaced_hash)?, |sum, r| {
                 sum.saturating_add(r.length())
             });
-        if !crate::space::fits(live_bytes, alone, input.room) {
+        if !live_fits || !crate::space::fits(live_bytes, alone, input.room) {
             outcome.needed = alone;
             outcome.available = crate::space::available(live_bytes, input.room);
             outcome.skipped_for_space = true;
@@ -359,7 +366,12 @@ pub(crate) fn plan(
             .map_or(usize::MAX, |(_, _, b)| b.max_count as usize);
         let fits = |index: &SnapshotIndex, counts: &Counts| {
             index.rows().len() <= max_count
-                && crate::space::fits(live_bytes, counts.bytes(&live_ids, &live_hash), input.room)
+                && (!live_fits
+                    || crate::space::fits(
+                        live_bytes,
+                        counts.bytes(&live_ids, &live_hash),
+                        input.room,
+                    ))
                 && counts.objects.len() <= crate::snapshot_index::MAX_RETAINED
         };
         for row in rest {

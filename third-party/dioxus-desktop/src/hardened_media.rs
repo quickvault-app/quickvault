@@ -94,7 +94,8 @@ fn request(bytes: &[u8], port: u16) -> Option<Request<'_>> {
             "host" => host = Some(value),
             "range" => range = Some(value),
             "origin" if !origin(value) => return None,
-            "origin" => allowed_origin = Some(value),
+            // An opaque origin is never granted CORS (plan 0050 review finding 3).
+            "origin" => allowed_origin = (value != "null").then_some(value),
             "content-length" if value != "0" => return None,
             "transfer-encoding" => return None,
             _ => {}
@@ -305,13 +306,21 @@ mod tests {
         // Only the app's own origin is granted CORS, and only by echoing it.
         let (full, _) = exchange("GET", TOKEN, "", true);
         assert!(!full.contains("Access-Control-Allow-Origin"));
+        #[cfg(target_os = "linux")]
+        {
+            let (opaque, n) = exchange("GET", TOKEN, "Origin: null\r\n", true);
+            assert!(opaque.starts_with("HTTP/1.1 200") && n == 10);
+            assert!(!opaque.contains("Access-Control-Allow-Origin"));
+        }
         #[cfg(not(target_os = "android"))]
         let app = "dioxus://index.html";
         #[cfg(target_os = "android")]
         let app = "https://dioxus.index.html";
         let (granted, n) = exchange("GET", TOKEN, &format!("Origin: {app}\r\n"), true);
         assert!(granted.starts_with("HTTP/1.1 200") && n == 10);
-        assert!(granted.contains(&format!("Access-Control-Allow-Origin: {app}\r\nVary: Origin\r\n")));
+        assert!(granted.contains(&format!(
+            "Access-Control-Allow-Origin: {app}\r\nVary: Origin\r\n"
+        )));
         let (revoked, n) = exchange("GET", TOKEN, "", false);
         assert!(revoked.starts_with("HTTP/1.1 404"));
         assert_eq!(n, 0);

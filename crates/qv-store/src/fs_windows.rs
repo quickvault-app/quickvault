@@ -392,7 +392,7 @@ pub(crate) fn open_opaque(path: &Path, private: bool) -> Result<ArchiveFile, Sto
 /// caller has closed SQLite's handle on the vault; ours share delete.
 pub(crate) fn replace_vault(copy: &Path, vault: &Path) -> Result<(), StoreError> {
     let _files = FILES.lock().unwrap_or_else(PoisonError::into_inner);
-    qv_win::fs::rename_replace(copy, vault).map_err(os_err)
+    qv_win::fs::rename_replace_open(copy, vault).map_err(os_err)
 }
 
 /// Atomic replacement of anchor metadata.
@@ -563,31 +563,36 @@ pub(crate) fn remove_stale_temps(final_path: &Path) -> Result<(), StoreError> {
         if hex.len() != 16 || !hex.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
             continue;
         }
-        let path = parent.join(n);
-        match inspect(&path).and_then(|f| is_owner_only(&f)) {
-            Ok(true) => {}
-            _ => continue,
-        }
-        let lease = match open_existing(&path) {
-            Ok(lease) => lease,
-            Err(StoreError::Locked | StoreError::NotFound) => continue,
-            Err(e) => return Err(e),
-        };
-        lease.same_as_path(&path)?;
-        let journal = with_suffix(&path, "-journal");
-        match inspect(&journal) {
-            Ok(j) if is_owner_only(&j)? => {
-                drop(j);
-                remove_file(&journal).map_err(crate::error::io_err)?;
-            }
-            Ok(_) => continue,
-            Err(StoreError::NotFound) => {}
-            Err(e) => return Err(e),
-        }
-        lease.same_as_path(&path)?;
-        remove_file(&path).map_err(crate::error::io_err)?;
+        // One unsuitable/racing temporary must not abort the directory pass.
+        let _ = remove_stale_temp(&parent.join(n));
     }
     sync_dir(parent)
+}
+
+fn remove_stale_temp(path: &Path) -> Result<(), StoreError> {
+    match inspect(path).and_then(|f| is_owner_only(&f)) {
+        Ok(true) => {}
+        _ => return Ok(()),
+    }
+    let lease = match open_existing(path) {
+        Ok(lease) => lease,
+        Err(StoreError::Locked | StoreError::NotFound) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    lease.same_as_path(path)?;
+    let journal = with_suffix(path, "-journal");
+    match inspect(&journal) {
+        Ok(j) if is_owner_only(&j)? => {
+            drop(j);
+            remove_file(&journal).map_err(crate::error::io_err)?;
+        }
+        Ok(_) => return Ok(()),
+        Err(StoreError::NotFound) => {}
+        Err(e) => return Err(e),
+    }
+    lease.same_as_path(path)?;
+    remove_file(path).map_err(crate::error::io_err)?;
+    Ok(())
 }
 
 /// `path` with `suffix` appended to its file name (e.g. `-journal`).
@@ -956,6 +961,22 @@ mod tests {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+    }
+
+    // 0012 §1: Snapshot disk growth
+    #[test]
+    fn stale_cleanup_skips_an_oversized_file_and_reclaims_others() {
+        let d = TestDir::new();
+        let target = d.join("v.qvault");
+        let odd = d.join(".v.qvault.tmp-0000000000000000");
+        let file = qv_win::fs::create_private_file(&odd).unwrap();
+        file.set_len(MAX_DB_BYTES + 1).unwrap();
+        drop(file);
+        let stale = d.join(".v.qvault.tmp-1111111111111111");
+        write_file(&stale, b"left by a crash", 0o600);
+        remove_stale_temps(&target).unwrap();
+        assert!(odd.exists());
+        assert!(!stale.exists());
     }
 
     // 0012 §1: Snapshot disk growth

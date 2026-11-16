@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Independent cross-check of QuickVault's development vectors.
+"""Independent cross-check of QuickVault's vectors (frozen at 1.0, spec 0015 §6).
 
 Python 3 standard library only (hmac, hashlib, unicodedata; optional
 `openssl` binary). Run by hand, not in CI:
 
     python3 -I crates/qv-crypto/tests/vectors/crosscheck.py          # verify
-    python3 -I crates/qv-crypto/tests/vectors/crosscheck.py --write  # regenerate
+    python3 -I crates/qv-crypto/tests/vectors/crosscheck.py --write  # add new labels only
+
+`--write` rewrites the generated files. The frozen values must come out
+unchanged (check with `git diff`); use it only to add vectors for a new
+label.
 
 What it checks, independently of the Rust code:
   * qv-dev-keys.txt: every HKDF-SHA-512 derivation, MAC/1 value and canonical
@@ -30,7 +34,7 @@ import sys
 import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STATUS = "# status: development-only; regenerated freely until roadmap phase 1.16\n"
+STATUS = "# status: frozen at 1.0 (spec 0015 §6); never regenerated\n"
 
 
 # --- canonical CBOR for the flat arrays used in info/AAD (RFC 8949 §4.2) ---
@@ -105,7 +109,8 @@ def parse(path):
 
 
 LABELS = ["record", "attachment", "header-mac", "manifest", "state-commit",
-          "local-state", "device-storage", "recovery-ed25519", "recovery-mldsa65"]
+          "local-state", "device-storage", "recovery-ed25519", "recovery-mldsa65",
+          "device-view"]
 
 
 def dev_keys():

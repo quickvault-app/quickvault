@@ -2,7 +2,7 @@
 
 //! The vault schema and its validation (spec 0004 §1.2, §2, §4.1).
 //!
-//! Development schema 4 (all tables `STRICT`):
+//! Schema (all tables `STRICT`; frozen at 1.0, spec 0015 §3):
 //!
 //! ```sql
 //! CREATE TABLE archive_receipts (id INTEGER PRIMARY KEY CHECK (id = 1), sealed BLOB NOT NULL) STRICT
@@ -46,7 +46,7 @@ use crate::snapshot_index::MAX_SNAPSHOTS;
 /// `PRAGMA application_id` of a vault: "QVLT".
 pub(crate) const APPLICATION_ID: i64 = 0x5156_4C54;
 
-/// `PRAGMA user_version` of the development schema (plan 0059: separate
+/// `PRAGMA user_version` of the 1.0 schema (plan 0059: separate
 /// from the header format, which stays `0x7FFF0004`).
 pub(crate) const SCHEMA_VERSION: i64 = 0x7FFF_0005;
 

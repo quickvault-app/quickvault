@@ -90,3 +90,12 @@ Run on the final 2026-11-14 tree (plan 0056 execution log).
 None. The owner's Wayland check (step 5: copy in the app and with `qv copy`,
 wait 20 s, copy elsewhere during the countdown) moves to plan 0056 step 5;
 the plan is marked Reviewed for its implementation.
+
+## 2026-11-16 repair follow-up (plan 0065)
+
+Both recorded lows are repaired: pipe writes stop at the earlier of the
+transfer or hold deadline and sample cancellation; ignored compositor
+data_offer objects are destroyed immediately without receiving their data.
+Fake-compositor tests check ext/wlr destruction and continued paste delivery;
+a blocked pipe checks expiry and pre-cancelled writes. Current results are
+in plan 0065. The original real-compositor check remains outstanding.
