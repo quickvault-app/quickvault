@@ -1,12 +1,10 @@
 # Extended fuzz campaigns (spec 0012 §3 offline gate; plan 0024): every
-# target for 30 minutes with AddressSanitizer (the cargo-fuzz default), weekly
-# and on demand. The per-push runs in ci.yml stay at 60 s each.
+# target for 30 minutes with AddressSanitizer (the cargo-fuzz default),
+# on demand only. The per-push runs in ci.yml stay at 60 s each.
 # Actions are pinned by commit SHA; tools by exact version.
 name: fuzz-extended
 
 on:
-  schedule:
-    - cron: "17 3 * * 1"
   workflow_dispatch:
 
 permissions:

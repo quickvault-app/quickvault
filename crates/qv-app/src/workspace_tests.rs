@@ -874,6 +874,13 @@ fn clipboard_copy_replace_lock_cancel_and_unavailable() {
     let pw = field(&view, "password");
     env.act(WsAction::Copy(CopyKey::Field(e, pw.handle)));
     assert_eq!(env.error(), None);
+    // Copy starts a background worker; `act` does not wait for it to acquire
+    // the clipboard. Establish the first hold before testing replacement.
+    let end = Instant::now() + Duration::from_secs(5);
+    while env.os.holds.lock().unwrap().is_empty() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(env.os.holds.lock().unwrap().len(), 1);
     env.act(WsAction::Copy(CopyKey::Field(
         e,
         field(&view, "username").handle,

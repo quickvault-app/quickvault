@@ -7,6 +7,12 @@ Dates are ISO 8601. Newest first within each section.
 
 ## Unreleased
 
+- 2026-11-16: Fix a race in the clipboard replacement test: wait for the
+  first background hold before copying its replacement, retaining the value,
+  replacement-cancellation and lock-cancellation checks.
+- 2026-11-16: Make extended fuzz campaigns manual-only, removing the weekly
+  schedule. Run `fuzz-extended` through GitHub Actions when needed; the short
+  fuzz checks on pushes and pull requests continue as before.
 - 2026-11-16: Complete the remaining 1.0 review repairs (plan 0065): compare
   full compaction ciphertext, interrupt its copy on lock/cancel and retain
   both Windows process locks; reject unsuitable picked files at their SQLite
