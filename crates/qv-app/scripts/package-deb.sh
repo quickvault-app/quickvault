@@ -47,9 +47,11 @@ install -m 0644 LICENSE "$stage/usr/share/doc/quickvault/copyright"
 
 # Runtime dependencies from the binaries' linked libraries.
 mkdir -p "$root/target/deb/debian"
-printf 'Source: quickvault\n\nPackage: quickvault\n' > "$root/target/deb/debian/control"
-depends=$(cd "$root/target/deb" && dpkg-shlibdeps -O "quickvault/usr/bin/quickvault" "quickvault/usr/bin/qv" 2>/dev/null |
-    sed -n 's/^shlibs:Depends=//p')
+printf 'Source: quickvault\n\nPackage: quickvault\nArchitecture: %s\n' "$arch" > "$root/target/deb/debian/control"
+# Keep diagnostics visible and check dpkg-shlibdeps before filtering its output:
+# a POSIX shell pipeline would otherwise report only sed's exit status.
+depends=$(cd "$root/target/deb" && dpkg-shlibdeps -O "quickvault/usr/bin/quickvault" "quickvault/usr/bin/qv")
+depends=$(printf '%s\n' "$depends" | sed -n 's/^shlibs:Depends=//p')
 [ -n "$depends" ] || { echo 'cannot work out the package dependencies' >&2; exit 1; }
 size=$(du -sk "$stage/usr" | cut -f1)
 cat > "$stage/DEBIAN/control" <<CONTROL

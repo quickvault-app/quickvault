@@ -7,6 +7,12 @@ Dates are ISO 8601. Newest first within each section.
 
 ## Unreleased
 
+- 2026-11-16: Fix Alpine release packaging: install the throwaway public
+  signing key inside the disposable build container before abuild indexes
+  the package. Downloads still install with `--allow-untrusted`.
+- 2026-11-16: Fix Debian release packaging: include the required Architecture
+  field when resolving runtime dependencies, show dependency-tool diagnostics
+  and stop immediately if resolution fails.
 - 2026-11-16: Fix a race in the clipboard replacement test: wait for the
   first background hold before copying its replacement, retaining the value,
   replacement-cancellation and lock-cancellation checks.

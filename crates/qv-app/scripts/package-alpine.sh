@@ -66,7 +66,10 @@ package() {
 }
 APKBUILD
 
-(cd "$work" && abuild-keygen -a -n -q && abuild -F -P "$work/out")
+# Trust the throwaway public key inside this disposable build container so
+# abuild can verify its package while generating the repository index.
+# The container already runs as root; key installation needs no sudo/doas.
+(cd "$work" && SUDO= abuild-keygen -a -i -n -q && abuild -F -P "$work/out")
 
 pkg=$(find "$work/out" -name "quickvault-$version-r0.apk" | head -n 1)
 [ -n "$pkg" ] || { echo 'abuild produced no package' >&2; exit 1; }
