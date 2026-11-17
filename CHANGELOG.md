@@ -7,6 +7,9 @@ Dates are ISO 8601. Newest first within each section.
 
 ## Unreleased
 
+- 2026-11-17: Fix Windows desktop startup rejecting WebView2's mapped app
+  URL and leaving the window hidden. Navigation, IPC and media requests now
+  use the exact platform origin; add Windows CI boundary regressions (plan 0067).
 - 2026-11-16: Add a separate Alpine Edge release APK and label the stable
   package for Alpine 3.22 (plan 0066). Each Alpine matrix build must install
   its package and pass CLI/loader checks in a clean matching container before

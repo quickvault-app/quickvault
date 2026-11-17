@@ -29,6 +29,17 @@ Upstream license files are unchanged.
 
 ## Exact maintained changes
 
+- Plan 0067, in protocol.rs/hardened.rs/hardened_media.rs: reuse the bootstrap's
+  exact platform document URL for navigation and IPC, and its origin for media.
+  Windows uses `http://dioxus.index.html/`; Linux and Android retain their
+  existing document URLs. Native resource requests still require Wry's restored
+  custom-scheme base. Preserve single navigation, bounded IPC and exact CORS;
+  opaque `null` is not admitted on Windows. Platform-aware tests cover rejected
+  hosts/schemes/ports/paths and initialization replay; Windows CI runs the
+  focused hardened tests. The upstream archive hash and existing modified-path
+  inventory were reverified on 2026-11-17 before these edits. No upstream
+  artifact, dependency, engine or package identity changes.
+
 - Plan 0065, in edits.rs: at most four pending initial headers, with the
   oldest idle socket shut down to admit a new arrival, under a total thread
   ceiling of sixteen. A set of idle unauthenticated clients no longer holds

@@ -101,14 +101,9 @@ pub fn byte_range(header: &str, total: u64) -> Option<(u64, u64)> {
 pub const MAX_INPUT: usize = 64 * 1024;
 /// Exact bundled main document on supported platforms.
 pub fn local_document(uri: &str) -> bool {
-    #[cfg(target_os = "android")]
-    {
-        uri == "https://dioxus.index.html/"
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        uri == "dioxus://index.html/"
-    }
+    // Navigation and IPC see the engine's mapped URL, not the custom-protocol
+    // URL restored by Wry for native resource requests (notably on Windows).
+    uri == crate::protocol::BASE_URI
 }
 /// Only one initial main-document navigation is permitted.
 pub fn navigation(uri: &str, loaded: &AtomicBool) -> bool {
@@ -344,6 +339,7 @@ mod tests {
             assert!(event(mouse(name)).is_none(), "{name}");
         }
     }
+    // 0012 §1: Webview exposure
     #[test]
     fn hardened_navigation_only_exact_initial_document() {
         let loaded = AtomicBool::new(false);
@@ -356,14 +352,58 @@ mod tests {
         ] {
             assert!(!navigation(uri, &loaded));
         }
-        assert!(navigation("dioxus://index.html/", &loaded));
-        assert!(!navigation("dioxus://index.html/", &loaded));
+        assert!(navigation(crate::protocol::BASE_URI, &loaded));
+        assert!(!navigation(crate::protocol::BASE_URI, &loaded));
+    }
+    // 0012 §1: Webview exposure
+    #[test]
+    fn hardened_platform_document_rejects_other_origins_before_initialization() {
+        #[cfg(target_os = "windows")]
+        let expected = "http://dioxus.index.html/";
+        #[cfg(target_os = "android")]
+        let expected = "https://dioxus.index.html/";
+        #[cfg(not(any(target_os = "windows", target_os = "android")))]
+        let expected = "dioxus://index.html/";
+        assert_eq!(crate::protocol::BASE_URI, expected);
+        for document in [
+            "dioxus://index.html/",
+            "http://dioxus.index.html/",
+            "https://dioxus.index.html/",
+        ] {
+            assert_eq!(local_document(document), document == expected);
+        }
+        let base = expected.trim_end_matches('/');
+        let initialized = AtomicBool::new(false);
+        let loaded = AtomicBool::new(false);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let body = r#"{"method":"initialize","params":{}}"#;
+        for uri in [
+            format!("{base}.evil/"),
+            format!("{base}:80/"),
+            format!("{base}/else"),
+            format!("{expected}?query=1"),
+            format!("{expected}#fragment"),
+            expected.replace("://", "://attacker@"),
+        ] {
+            assert!(!navigation(&uri, &loaded), "{uri}");
+            assert!(ipc(&uri, body, &initialized, &queued).is_none(), "{uri}");
+        }
+        assert!(!loaded.load(Ordering::SeqCst));
+        assert!(!initialized.load(Ordering::SeqCst));
+        assert_eq!(queued.load(Ordering::SeqCst), 0);
+        assert!(navigation(expected, &loaded));
+        let message = ipc(expected, body, &initialized, &queued).unwrap();
+        assert_eq!(queued.load(Ordering::SeqCst), 1);
+        assert!(!navigation(expected, &loaded));
+        assert!(ipc(expected, body, &initialized, &queued).is_none());
+        drop(message);
+        assert_eq!(queued.load(Ordering::SeqCst), 0);
     }
     #[test]
     fn hardened_native_ingress_rejects_oversize_duplicates_methods_and_queue_flood() {
         let init = AtomicBool::new(false);
         let pending = Arc::new(AtomicUsize::new(0));
-        let origin = "dioxus://index.html/";
+        let origin = crate::protocol::BASE_URI;
         let before = refused_ipc();
         for body in [
             r#"{"method":"query","params":{}}"#,

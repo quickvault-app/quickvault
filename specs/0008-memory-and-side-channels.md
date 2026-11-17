@@ -111,6 +111,18 @@ Cleanup must never clear a successor's selection.
 
 ### 4. Frontend boundary and webview contract
 
+The bundled Dioxus main document has an exact platform URL: Linux
+`dioxus://index.html/`, Windows `http://dioxus.index.html/`, Android
+`https://dioxus.index.html/`. Navigation and initialization/event IPC admit only
+that platform's document, with a single initial navigation. Preview requests
+with an Origin admit only that document's origin (without its trailing slash).
+Linux may also accept the engine's opaque `null` origin for capability media
+requests, but never grant it CORS access. Absent Origin remains permitted on
+capability media requests. Native custom-protocol resource requests use Wry's
+restored `dioxus://index.html/` base, distinct from the mapped document URL on
+Windows and Android. Do not broaden admission to arbitrary HTTP URLs,
+lookalike hosts, alternate ports or paths.
+
 Preview transport follows 0003 §6.4: protected per-range buffers, a Weak session
 binding, no detached vault key or plaintext response Vec, and revocation on
 close/navigation/lock. Do not hold a session lock during socket writes. In-flight
@@ -203,6 +215,9 @@ out of scope. Remotely supplied parser/rendering inputs remain in scope.
 
 ## Changelog
 
+- 2026-11-17: Clarify exact Dioxus document and preview origins per platform,
+  distinguishing mapped WebView2 URLs from native resource requests, to repair
+  Windows initialization without broadening the bridge (owner request, plan 0067).
 - 2026-11-13: §3 adds the delivery rules for the GTK clipboard (the desktop
   app on Wayland) and Wayland data-control (the CLI) (plan 0055, owner
   request; details owner-delegated under the standing 2026-11-02

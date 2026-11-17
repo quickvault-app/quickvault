@@ -10,6 +10,11 @@ rows of 0012) is not planned (owner, 2026-11-14). Those sections stay as
 design records with unchanged statuses; QuickVault 1.0 is offline plus
 direct LAN sync.
 
+Plan 0067 (2026-11-17, owner repair request) clarifies 0008 §4's exact
+platform document and preview origins: Windows navigation/IPC use WebView2's
+mapped HTTP URL; native resource requests retain Wry's restored custom scheme.
+The bundled-only boundary and whole-spec statuses are unchanged.
+
 Plan 0065 (2026-11-16) completes the 1.0 review repairs. 0004 §1.4 now
 requires full compaction ciphertext comparison and interruption on cancellation
 while retaining both process locks on Windows; §5.4 rejects unsuitable picked

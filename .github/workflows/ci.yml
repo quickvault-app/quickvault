@@ -87,6 +87,9 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Test maintained webview boundary (Windows origins)
+        run: cargo test --manifest-path third-party/Cargo.toml --locked -p dioxus-desktop --no-default-features --features tokio_runtime --lib hardened
+
   android-app-build:
     runs-on: ubuntu-latest
     env:

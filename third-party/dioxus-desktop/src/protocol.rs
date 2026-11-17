@@ -13,13 +13,13 @@ use wry::{
 };
 
 #[cfg(target_os = "android")]
-const BASE_URI: &str = "https://dioxus.index.html/";
+pub(crate) const BASE_URI: &str = "https://dioxus.index.html/";
 
 #[cfg(target_os = "windows")]
-const BASE_URI: &str = "http://dioxus.index.html/";
+pub(crate) const BASE_URI: &str = "http://dioxus.index.html/";
 
 #[cfg(not(any(target_os = "android", target_os = "windows")))]
-const BASE_URI: &str = "dioxus://index.html/";
+pub(crate) const BASE_URI: &str = "dioxus://index.html/";
 
 #[cfg(debug_assertions)]
 static DEFAULT_INDEX: &str = include_str!("./assets/dev.index.html");

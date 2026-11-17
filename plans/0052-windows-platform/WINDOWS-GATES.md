@@ -7,6 +7,21 @@ and a person. Every item starts **pending**. Record the date, the Windows
 build and the result next to each item. Use the owner's test machine and
 synthetic vaults only.
 
+2026-11-17 field report (owner's `dump.png`): CLI starts, but the desktop app
+starts WebView2 without showing a window. Source diagnosis: navigation and IPC
+reject Windows' mapped `http://dioxus.index.html/` document; media origin
+validation also omits Windows. Plan 0067 repairs these checks and adds native
+Windows CI boundary tests. Attended startup and media playback must be retested
+with a build containing that repair; none of the pending gates below is closed
+by the source fix or cross-platform tests. The reported Chrome_WidgetWin_0
+class-unregistration error after SIGINT is not startup evidence.
+
+Owner follow-up, 2026-11-17: the repaired test EXE still shows nothing under
+Wine on Linux. A separate plain Wry/WebView2 control also stalls before
+navigation/page scripts, on private and normal displays, with or without
+diagnostic GPU disabling. This does not validate or refute startup on native
+Windows; the updated app must still be tested there (plan 0067 execution log).
+
 ## Automated (CI `windows` job, MSVC)
 
 | # | Check | Evidence | Status |

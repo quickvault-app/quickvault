@@ -113,14 +113,8 @@ fn request(bytes: &[u8], port: u16) -> Option<Request<'_>> {
     })
 }
 fn origin(value: &str) -> bool {
-    #[cfg(target_os = "android")]
-    {
-        value == "https://dioxus.index.html"
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        matches!(value, "dioxus://index.html" | "null")
-    }
+    value == crate::protocol::BASE_URI.trim_end_matches('/')
+        || (cfg!(not(any(target_os = "android", target_os = "windows"))) && value == "null")
 }
 fn error(stream: &mut TcpStream, status: u16, total: Option<u64>) -> std::io::Result<()> {
     let range = total
@@ -291,6 +285,7 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 416"));
         assert_eq!(n, 0);
     }
+    // 0012 §1: Webview exposure
     #[test]
     fn hardened_media_requires_capability_numeric_host_and_permitted_origin() {
         for headers in [
@@ -312,15 +307,42 @@ mod tests {
             assert!(opaque.starts_with("HTTP/1.1 200") && n == 10);
             assert!(!opaque.contains("Access-Control-Allow-Origin"));
         }
-        #[cfg(not(target_os = "android"))]
-        let app = "dioxus://index.html";
+        #[cfg(target_os = "windows")]
+        let app = "http://dioxus.index.html";
         #[cfg(target_os = "android")]
         let app = "https://dioxus.index.html";
+        #[cfg(not(any(target_os = "android", target_os = "windows")))]
+        let app = "dioxus://index.html";
         let (granted, n) = exchange("GET", TOKEN, &format!("Origin: {app}\r\n"), true);
         assert!(granted.starts_with("HTTP/1.1 200") && n == 10);
         assert!(granted.contains(&format!(
             "Access-Control-Allow-Origin: {app}\r\nVary: Origin\r\n"
         )));
+        let mut rejected = vec![
+            format!("{app}.evil"),
+            format!("{app}:80"),
+            format!("{app}/"),
+            format!("{app}?query=1"),
+            format!("{app}#fragment"),
+            app.replace("://", "://attacker@"),
+        ];
+        for other in [
+            "dioxus://index.html",
+            "http://dioxus.index.html",
+            "https://dioxus.index.html",
+        ] {
+            if other != app {
+                rejected.push(other.to_string());
+            }
+        }
+        #[cfg(any(target_os = "windows", target_os = "android"))]
+        rejected.push("null".to_string());
+        for origin in rejected {
+            let (refused, n) = exchange("GET", TOKEN, &format!("Origin: {origin}\r\n"), true);
+            assert!(refused.starts_with("HTTP/1.1 400"), "{origin}");
+            assert!(!refused.contains("Access-Control-Allow-Origin"));
+            assert_eq!(n, 0);
+        }
         let (revoked, n) = exchange("GET", TOKEN, "", false);
         assert!(revoked.starts_with("HTTP/1.1 404"));
         assert_eq!(n, 0);
