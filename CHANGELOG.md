@@ -7,6 +7,9 @@ Dates are ISO 8601. Newest first within each section.
 
 ## Unreleased
 
+## 1.1.0 — 2026-11-17
+
+- 2026-11-17: Version 1.1.0 (release notes: `docs/release-notes/1.1.0.md`).
 - 2026-11-17: Phone UI polish (plan 0068). The quick-unlock settings show
   what is on, a real "Turn off" button and the other policy behind the
   master password, with no "turn on again"; phone buttons wrap instead of
@@ -27,6 +30,9 @@ Dates are ISO 8601. Newest first within each section.
   package for Alpine 3.22 (plan 0066). Each Alpine matrix build must install
   its package and pass CLI/loader checks in a clean matching container before
   upload. Correct the 1.0.0 record's overbroad Alpine compatibility claim.
+
+## 1.0.0 — 2026-11-16
+
 - 2026-11-16: Fix Alpine release packaging: install the throwaway public
   signing key inside the disposable build container before abuild indexes
   the package. Downloads still install with `--allow-untrusted`.
@@ -56,8 +62,6 @@ Dates are ISO 8601. Newest first within each section.
   deadline with local verification/commit, and make transfer progress
   accounting linear. Findings and review limits are in plan 0065's
   `LAN-REVIEW.md`; no independent security-audit claim.
-
-## 1.0.0 — 2026-11-16
 
 The first release: offline vaults on Linux, Windows and Android, with
 direct LAN sync. Release notes: `docs/release-notes/1.0.0.md`.
