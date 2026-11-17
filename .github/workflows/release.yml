@@ -133,16 +133,31 @@ jobs:
         run: gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" target/dist/*.deb
 
   alpine:
+    name: Alpine ${{ matrix.branch }}
     needs: draft
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ["3.22", "edge"]
+    env:
+      QV_ALPINE_BRANCH: ${{ matrix.branch }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build the Alpine package on Alpine 3.22
-        run: docker run --rm -v "$PWD:/src" -w /src alpine:3.22 sh crates/qv-app/scripts/package-alpine.sh
+      - name: Build the Alpine package
+        run: docker run --rm -v "$PWD:/src" -w /src "alpine:$QV_ALPINE_BRANCH" sh crates/qv-app/scripts/package-alpine.sh "$QV_ALPINE_BRANCH"
+      - name: Install and check the package on a clean matching Alpine image
+        run: |
+          docker run --rm -v "$PWD/target/dist:/packages:ro" "alpine:$QV_ALPINE_BRANCH" sh -ec '
+            apk add --no-cache --allow-untrusted /packages/*.apk
+            qv --version
+            ldd /usr/bin/qv
+            ldd /usr/bin/quickvault
+          '
       - name: Upload
         env:
           GH_TOKEN: ${{ github.token }}

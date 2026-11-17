@@ -104,3 +104,4 @@ plan, or a new plan that names the one it supersedes.
 | [0063](0063-phone-groups-and-last-view/PLAN.md) | Groups on the phone; the last group per vault, sealed per device (owner request) | Reviewed 2026-11-16 — remaining view-tag finding repaired in 0065; phone check pending |
 | [0064](0064-format-freeze/PLAN.md) | Format freeze for 1.0: format registry, golden vectors, phone KDF benchmark (plan 0056 step 7) | Reviewed 2026-11-16 — golden restore/schema/generation coverage completed in 0065; phone KDF qualification pending |
 | [0065](0065-release-review-repairs/PLAN.md) | Complete 1.0 review repairs and review LAN/2 | Implemented — code repairs and LAN source review complete; local gates pass; fresh review/native Windows/device release evidence pending |
+| [0066](0066-alpine-edge-package/PLAN.md) | Separate Alpine 3.22 and Edge release packages with install checks | Implemented — local gates and workflow lint pass; clean-container CI and fresh review pending |

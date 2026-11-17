@@ -7,6 +7,10 @@ Dates are ISO 8601. Newest first within each section.
 
 ## Unreleased
 
+- 2026-11-16: Add a separate Alpine Edge release APK and label the stable
+  package for Alpine 3.22 (plan 0066). Each Alpine matrix build must install
+  its package and pass CLI/loader checks in a clean matching container before
+  upload. Correct the 1.0.0 record's overbroad Alpine compatibility claim.
 - 2026-11-16: Fix Alpine release packaging: install the throwaway public
   signing key inside the disposable build container before abuild indexes
   the package. Downloads still install with `--allow-untrusted`.

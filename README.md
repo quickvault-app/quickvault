@@ -115,7 +115,11 @@ All screenshots show a throwaway demo vault filled with made-up data.
 
 ## Getting started
 
-QuickVault is built from source for now; there are no release packages yet.
+Prebuilt packages are available on [GitHub Releases](https://github.com/rdbo/quickvault/releases).
+See the [release instructions](docs/RELEASE.md) to choose the package for
+your platform. New releases provide separate Alpine 3.22 and Edge builds;
+the original 1.0.0 Alpine package targets 3.22. Source build instructions
+follow.
 
 ### Prerequisites
 

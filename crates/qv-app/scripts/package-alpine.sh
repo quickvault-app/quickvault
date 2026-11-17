@@ -3,13 +3,24 @@
 #
 # Builds the Alpine package (plan 0056): quickvault (the desktop app) and qv
 # (the CLI) with the desktop entry and icons, as target/dist/
-# quickvault-<version>-r0-alpine-<arch>.apk. Meant for a clean Alpine
-# container (the release workflow uses alpine:3.22): it installs the build
+# quickvault-<version>-r0-alpine-<branch>-<arch>.apk. Pass 3.22 (default) or
+# edge inside the matching clean Alpine container: it installs the build
 # dependencies and the pinned toolchain. abuild signs every package, so each
 # build signs with a throwaway key made here and discarded; nobody can verify
 # it, which matches the unsigned release policy (0012 §3). Install with
-# `apk add --allow-untrusted ./quickvault-<version>-r0-alpine-<arch>.apk`.
+# `apk add --allow-untrusted ./quickvault-<version>-r0-alpine-<branch>-<arch>.apk`.
 set -eu
+
+usage() {
+    echo 'usage: package-alpine.sh [3.22|edge]' >&2
+    exit 2
+}
+[ "$#" -le 1 ] || usage
+alpine_branch=${1-3.22}
+case "$alpine_branch" in
+    3.22|edge) ;;
+    *) usage ;;
+esac
 
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$root"
@@ -74,7 +85,7 @@ APKBUILD
 pkg=$(find "$work/out" -name "quickvault-$version-r0.apk" | head -n 1)
 [ -n "$pkg" ] || { echo 'abuild produced no package' >&2; exit 1; }
 mkdir -p "$root/target/dist"
-out="$root/target/dist/quickvault-$version-r0-alpine-$arch.apk"
+out="$root/target/dist/quickvault-$version-r0-alpine-$alpine_branch-$arch.apk"
 cp "$pkg" "$out"
 # The throwaway signing key goes with the container.
 rm -rf "$HOME/.abuild"

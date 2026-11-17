@@ -34,13 +34,23 @@ requests (`ci.yml`) only test; they publish nothing.
 | `quickvault-<v>-android-arm64.apk` | Ubuntu, `build-android.sh` with `QV_APP_RELEASE=1` | Open the file on the phone (allow installs from this source) |
 | `quickvault-<v>-windows-x86_64.exe`, `qv-<v>-windows-x86_64.exe` | Windows (MSVC) | Run; the app needs the WebView2 runtime that Windows 10 and 11 ship |
 | `quickvault_<v>_amd64.deb` | Debian 12 container, `package-deb.sh` | `sudo apt install ./quickvault_<v>_amd64.deb` (Debian 12+, Ubuntu 24.04+) |
-| `quickvault-<v>-r0-alpine-x86_64.apk` | Alpine 3.22 container, `package-alpine.sh` | `apk add --allow-untrusted ./quickvault-<v>-r0-alpine-x86_64.apk` |
+| `quickvault-<v>-r0-alpine-3.22-x86_64.apk` | Alpine 3.22 container, `package-alpine.sh 3.22` | `apk add --allow-untrusted ./quickvault-<v>-r0-alpine-3.22-x86_64.apk` |
+| `quickvault-<v>-r0-alpine-edge-x86_64.apk` | Alpine Edge container, `package-alpine.sh edge` | `apk add --allow-untrusted ./quickvault-<v>-r0-alpine-edge-x86_64.apk` |
 | `SHA256SUMS` | the last job | `sha256sum -c SHA256SUMS` |
 
 The release starts as a draft and is published only when every asset is
 uploaded. A tag that does not match the workspace version stops at once.
 `package-linux.sh` (tarball) and `package-windows.ps1` (zip) remain for
 local builds.
+
+Choose the Alpine package matching your repositories: `alpine-3.22` for
+Alpine 3.22 and `alpine-edge` for Edge. Stable and Edge can provide different
+library ABIs (for example, libxdo.so.3 versus libxdo.so.4). Each release build
+installs its APK in a clean matching container and checks both binaries'
+dynamic libraries before uploading it. Edge builds target the repository
+state at build time; a later Edge ABI change can require a rebuild.
+The original 1.0.0 stable asset used the shorter `alpine-x86_64` filename;
+it targets 3.22 and does not provide an Edge build.
 
 Without `QV_APP_RELEASE=1`, `build-android.sh` builds the development APK
 (`android:debuggable="true"`, debug key); never publish it. The release

@@ -649,6 +649,7 @@ A vault master password alone cannot bootstrap a new device from the server.
 |---------|--------|
 | Language | Stable Rust; toolchain pinned to 1.98.1 (`rust-toolchain.toml`), which is the MSRV |
 | Build / CI | Cargo virtual workspace (`crates/<name>/`); GitHub Actions with SHA-pinned actions running the gates, `cargo deny` and `cargo vet` |
+| Linux release packages | Debian 12 `.deb`; separate Alpine 3.22 and Edge `.apk` builds with branch-qualified filenames; install Alpine packages in clean matching containers and check both binaries before upload (plan 0066) |
 | UI | Dioxus 0.7.10, maintained hardened dioxus-desktop integration, standard webview input; shared Android/Linux/Windows screens (WebView2 on Windows), best-effort framework cleanup; iOS later |
 | Android foundation | arm64/API 29+, pinned SDK/NDK recipe, FLAG_SECURE, metadata-only lifecycle adapter, private no-backup storage; device validation pending |
 | Optional remote server (not planned) | Axum/Tokio; SQLite first, Postgres deferred |
