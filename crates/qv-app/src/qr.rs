@@ -25,8 +25,20 @@ pub enum QrTarget {
     /// One sync of this unlocked vault (Devices screen).
     Sync,
 }
+/// A running camera scan. Its thread clears only its own scan, by `id`
+/// (plan 0068).
 pub(crate) struct Scan {
     pub(crate) cancel: qv_core::CancelToken,
+    pub(crate) id: u64,
+}
+impl Scan {
+    pub(crate) fn new(cancel: qv_core::CancelToken) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            cancel,
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
 }
 
 /// Whether the native camera path is available and its platform gate is open.

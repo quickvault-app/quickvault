@@ -106,3 +106,4 @@ plan, or a new plan that names the one it supersedes.
 | [0065](0065-release-review-repairs/PLAN.md) | Complete 1.0 review repairs and review LAN/2 | Implemented — code repairs and LAN source review complete; local gates pass; fresh review/native Windows/device release evidence pending |
 | [0066](0066-alpine-edge-package/PLAN.md) | Separate Alpine 3.22 and Edge release packages with install checks | Implemented — local gates and workflow lint pass; clean-container CI and fresh review pending |
 | [0067](0067-windows-webview-startup/PLAN.md) | Windows WebView2 startup origins | Implemented — origin tests pass; Wine hang also reproduces in a plain WebView2 host; fresh review and native Windows startup retest pending |
+| [0068](0068-phone-ui-polish/PLAN.md) | Phone UI polish and a stuck scan panel (owner QA) | Implemented — gates pass; phone check and fresh-context review pending |

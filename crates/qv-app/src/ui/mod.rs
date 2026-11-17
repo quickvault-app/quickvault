@@ -51,11 +51,14 @@ pub(crate) fn app() -> Element {
                         .map(Controller::snapshot)
                         .map_err(|error| *error)
                 });
-                if previous != snapshot {
+                // A change counts as shown only once its redraw is queued;
+                // otherwise the next tick retries, so a still screen (a LAN
+                // run, a receipt) cannot stay stale (plan 0068).
+                if previous != snapshot
+                    && let Ok(mut value) = changed.try_write()
+                {
+                    *value = value.wrapping_add(1);
                     previous = snapshot;
-                    if let Ok(mut value) = changed.try_write() {
-                        *value = value.wrapping_add(1);
-                    }
                 }
             }
         });
@@ -656,19 +659,22 @@ fn Locked(controller: Controller, revision: u64) -> Element {
                 div { hidden: wizard_step != 0,
                     h2 { "Name your vault" }
                     SecretInput { controller: controller.clone(), epoch, field: InputField::Name, label: "Vault name", id: "vault-name", secret: false, disabled: busy, autofocus: true, placeholder: "Personal" }
-                    div { class: "banner ok", hidden: cfg!(target_os = "android"),
-                        Svg { icon: Icon::Folder }
-                        span { class: "sp", id: "create-place",
-                            if let Some(file) = picked.as_ref() { "Saves as {file}" } else { "Saves in {folder_place}" }
-                        }
-                        if cfg!(any(target_os = "linux", windows)) && !fallback {
-                            div { class: "pop-anchor",
-                                button { class: "link", id: "create-change", onclick: move |_| sheet.set(if sheet() == Sheet::SaveMenu { Sheet::None } else { Sheet::SaveMenu }), "Change" }
-                                if sheet() == Sheet::SaveMenu {
-                                    button { class: "pop-scrim", "aria-label": "Close menu", tabindex: "-1", onclick: move |_| sheet.set(Sheet::None) }
-                                    div { class: "menu pop end", role: "menu",
-                                        button { class: "mi", id: "create-folder", onclick: pick_folder.clone(), Svg { icon: Icon::Folder } "Change the folder…" }
-                                        button { class: "mi", id: "create-save-as", onclick: pick_new.clone(), Svg { icon: Icon::File } "Save just this one elsewhere…" }
+                    // Android keeps vaults in the app's private folder: no place to show.
+                    if !cfg!(target_os = "android") {
+                        div { class: "banner ok",
+                            Svg { icon: Icon::Folder }
+                            span { class: "sp", id: "create-place",
+                                if let Some(file) = picked.as_ref() { "Saves as {file}" } else { "Saves in {folder_place}" }
+                            }
+                            if cfg!(any(target_os = "linux", windows)) && !fallback {
+                                div { class: "pop-anchor",
+                                    button { class: "link", id: "create-change", onclick: move |_| sheet.set(if sheet() == Sheet::SaveMenu { Sheet::None } else { Sheet::SaveMenu }), "Change" }
+                                    if sheet() == Sheet::SaveMenu {
+                                        button { class: "pop-scrim", "aria-label": "Close menu", tabindex: "-1", onclick: move |_| sheet.set(Sheet::None) }
+                                        div { class: "menu pop end", role: "menu",
+                                            button { class: "mi", id: "create-folder", onclick: pick_folder.clone(), Svg { icon: Icon::Folder } "Change the folder…" }
+                                            button { class: "mi", id: "create-save-as", onclick: pick_new.clone(), Svg { icon: Icon::File } "Save just this one elsewhere…" }
+                                        }
                                     }
                                 }
                             }

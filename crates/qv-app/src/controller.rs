@@ -1222,6 +1222,15 @@ impl Controller {
         if self.0.working.load(Ordering::SeqCst) {
             return;
         }
+        {
+            let mut s = self.state();
+            if s.workspace
+                .as_mut()
+                .is_some_and(|ws| ws.expire_notice(Instant::now()))
+            {
+                s.revision = s.revision.wrapping_add(1);
+            }
+        }
         self.record_view();
         let (offer, epoch) = {
             let mut s = self.state();
@@ -2361,14 +2370,14 @@ impl Controller {
         target: crate::qr::QrTarget,
         payload: &[u8],
     ) -> Result<bool, AppError> {
-        self.apply_qr(epoch, target, payload, false)
+        self.apply_qr(epoch, target, payload, None)
     }
     fn apply_qr(
         &self,
         epoch: FormEpoch,
         target: crate::qr::QrTarget,
         payload: &[u8],
-        scanning: bool,
+        scan: Option<u64>,
     ) -> Result<bool, AppError> {
         use crate::qr::QrTarget;
         use crate::workspace::WsField;
@@ -2378,14 +2387,15 @@ impl Controller {
         if s.epoch != epoch.0 || !Self::qr_form(&s, target) {
             return Err(AppError::InvalidInput);
         }
-        if scanning
+        // A scan's code counts only while that same scan is still running.
+        if let Some(id) = scan
             && s.scan
                 .as_ref()
-                .is_none_or(|scan| scan.cancel.is_cancelled())
+                .is_none_or(|running| running.id != id || running.cancel.is_cancelled())
         {
             return Err(CoreError::Cancelled.into());
         }
-        if self.0.working.load(Ordering::SeqCst) && !(scanning && s.scan.is_some()) {
+        if self.0.working.load(Ordering::SeqCst) && scan.is_none() {
             return Err(AppError::Busy);
         }
         // The code stays in protected state; only "from the QR" is shown.
@@ -2470,9 +2480,9 @@ impl Controller {
             return Err(AppError::Busy);
         }
         let cancel = CancelToken::new();
-        s.scan = Some(crate::qr::Scan {
-            cancel: cancel.clone(),
-        });
+        let scan = crate::qr::Scan::new(cancel.clone());
+        let scan_id = scan.id;
+        s.scan = Some(scan);
         s.active = Instant::now();
         s.revision = s.revision.wrapping_add(1);
         let worker = Worker(self.0.clone());
@@ -2488,24 +2498,9 @@ impl Controller {
                         if cancel.is_cancelled() {
                             return Err(CoreError::Cancelled.into());
                         }
-                        controller.apply_qr(epoch, target, p.expose_secret(), true)
+                        controller.apply_qr(epoch, target, p.expose_secret(), Some(scan_id))
                     });
-                    let mut s = controller.state();
-                    let current = s.epoch == epoch.0;
-                    if current {
-                        s.scan = None;
-                        if !cancel.is_cancelled()
-                            && let Err(e) = &result
-                        {
-                            if let Some(ws) = s.workspace.as_mut() {
-                                ws.error = Some(*e);
-                            } else {
-                                s.error = Some(*e);
-                            }
-                        }
-                        s.revision = s.revision.wrapping_add(1);
-                    }
-                    current && !cancel.is_cancelled() && matches!(result, Ok(true))
+                    controller.scan_done(epoch, scan_id, &cancel, result)
                 };
                 // The worker is released; a code with endpoints starts now.
                 if start {
@@ -2513,19 +2508,58 @@ impl Controller {
                 }
             });
         if started.is_err() {
-            self.state().scan = None;
+            let mut s = self.state();
+            if s.scan.as_ref().is_some_and(|scan| scan.id == scan_id) {
+                s.scan = None;
+            }
             return Err(AppError::Unavailable);
         }
         Ok(())
     }
+    /// Ends scan `scan_id` once its thread has a result; `true` when the
+    /// scanned code's action should start now.
+    fn scan_done(
+        &self,
+        epoch: FormEpoch,
+        scan_id: u64,
+        cancel: &CancelToken,
+        result: Result<bool, AppError>,
+    ) -> bool {
+        let mut s = self.state();
+        // Its own scan only, even if the form changed meanwhile: a scan left
+        // set would keep its panel with nothing behind it (plan 0068).
+        let own = s.scan.as_ref().is_some_and(|scan| scan.id == scan_id);
+        if own {
+            s.scan = None;
+            s.revision = s.revision.wrapping_add(1);
+        }
+        // Errors and the start go only to the form that started the scan.
+        let current = own && s.epoch == epoch.0;
+        if current
+            && !cancel.is_cancelled()
+            && let Err(e) = &result
+        {
+            if let Some(ws) = s.workspace.as_mut() {
+                ws.error = Some(*e);
+            } else {
+                s.error = Some(*e);
+            }
+            s.revision = s.revision.wrapping_add(1);
+        }
+        current && !cancel.is_cancelled() && matches!(result, Ok(true))
+    }
     /// Cancel the camera without locking the vault. Lock also cancels scans.
+    /// The panel closes at once; the scan's thread then finds no scan, so a
+    /// late code is refused, and it releases the worker within its next
+    /// frame check (plan 0068).
     pub fn cancel_qr(&self, epoch: FormEpoch) {
         let mut s = self.state();
         if s.epoch == epoch.0
-            && let Some(scan) = s.scan.as_ref()
+            && let Some(scan) = s.scan.take()
         {
             scan.cancel.cancel();
             s.active = Instant::now();
+            s.revision = s.revision.wrapping_add(1);
             #[cfg(all(feature = "desktop", target_os = "android"))]
             crate::android::forget_scan();
         }
@@ -3111,9 +3145,12 @@ mod qr_tests {
         );
         let cancel = CancelToken::new();
         cancel.cancel();
-        env.c.state().scan = Some(crate::qr::Scan { cancel });
+        let scan = crate::qr::Scan::new(cancel);
+        let id = scan.id;
+        env.c.state().scan = Some(scan);
         assert_eq!(
-            env.c.apply_qr(epoch, QrTarget::NewDevice, TEST_PAIR, true),
+            env.c
+                .apply_qr(epoch, QrTarget::NewDevice, TEST_PAIR, Some(id)),
             Err(CoreError::Cancelled.into())
         );
         env.c.state().scan = None;
@@ -3127,6 +3164,59 @@ mod qr_tests {
         let state = env.c.state();
         assert!(state.inputs.iter().all(|p| p.is_empty()));
         assert!(state.scan.is_none());
+    }
+
+    // Owner report (plan 0068): the scan panel must never outlive its scan.
+    #[test]
+    fn scan_panel_ends_with_its_scan_and_closes_on_cancel() {
+        let env = Env::new();
+        env.c.select_mode(env.epoch(), Mode::Join);
+        let epoch = env.epoch();
+        // The form changed while the camera ran: the scan still ends, the
+        // stale form gets no error and nothing starts.
+        let cancel = CancelToken::new();
+        let scan = crate::qr::Scan::new(cancel.clone());
+        let id = scan.id;
+        env.c.state().scan = Some(scan);
+        {
+            let mut s = env.c.state();
+            s.epoch = s.epoch.wrapping_add(1);
+        }
+        assert!(env.c.snapshot().scanning);
+        assert!(!env.c.scan_done(epoch, id, &cancel, Ok(true)));
+        assert!(!env.c.snapshot().scanning, "the panel closes");
+        assert_eq!(env.c.snapshot().error, None);
+        // An older scan's end leaves a newer scan alone.
+        let epoch = env.epoch();
+        let newer_cancel = CancelToken::new();
+        let newer = crate::qr::Scan::new(newer_cancel.clone());
+        let newer_id = newer.id;
+        env.c.state().scan = Some(newer);
+        assert!(
+            !env.c
+                .scan_done(epoch, id, &cancel, Err(AppError::Unavailable))
+        );
+        assert!(env.c.snapshot().scanning);
+        assert_eq!(
+            env.c
+                .apply_qr(epoch, QrTarget::NewDevice, TEST_PAIR, Some(id)),
+            Err(CoreError::Cancelled.into()),
+            "an older scan's code is refused"
+        );
+        // Cancel closes the panel at once; the late code is refused and
+        // its thread's end starts nothing.
+        let revision = env.c.snapshot().revision;
+        env.c.cancel_qr(epoch);
+        let view = env.c.snapshot();
+        assert!(!view.scanning);
+        assert_ne!(view.revision, revision, "the cancel redraws");
+        assert!(newer_cancel.is_cancelled());
+        let late = env
+            .c
+            .apply_qr(epoch, QrTarget::NewDevice, TEST_PAIR_ADDR, Some(newer_id));
+        assert!(!env.c.scan_done(epoch, newer_id, &newer_cancel, late));
+        assert_eq!(env.c.snapshot().error, None);
+        assert!(env.c.state().inputs[InputField::LanCode.index()].is_empty());
     }
 
     // 0012 §1: Unrequested synchronization

@@ -1124,7 +1124,11 @@ fn Settings(controller: Controller, epoch: FormEpoch, revision: u64, pane: Pane)
                         span { "{detail}" } }
                         span { class: "r {level.tone()}", "{level.label()}" }
                     }
-                    {row(Icon::Finger, "Quick unlock and autofill", if controller.quick_policy().is_some() { "Fingerprint unlock is on" } else { "Fingerprint unlock; autofill on supported phones" }, Screen::Settings(Pane::Password), "settings-quick")}
+                    {row(Icon::Finger, "Quick unlock and autofill", match controller.quick_policy() {
+                        Some(qv_core::platform::QuickPolicy::Class3) => "Fingerprint unlock is on",
+                        Some(qv_core::platform::QuickPolicy::DeviceCredential) => "Screen-lock unlock is on",
+                        None => "Fingerprint unlock; autofill on supported phones",
+                    }, Screen::Settings(Pane::Password), "settings-quick")}
                 }
                 div { class: "group-t", "MASTER PASSWORD AND RECOVERY" }
                 div { class: "card",
@@ -1135,15 +1139,20 @@ fn Settings(controller: Controller, epoch: FormEpoch, revision: u64, pane: Pane)
                 div { class: "group-t", "VAULT" }
                 div { class: "card",
                     if let Some(v) = open_vault.as_ref() {
-                        div { class: "set-row", id: "settings-file", span { class: "si", Svg { icon: Icon::File } } span { class: "l", b { "Vault file" } span { "{crate::views::z(&v.file).as_str()} in {crate::views::z(&v.place).as_str()}" } } }
+                        // Android keeps vaults in the app's private folder: no place to show.
+                        div { class: "set-row", id: "settings-file", span { class: "si", Svg { icon: Icon::File } } span { class: "l", b { "Vault file" }
+                            if cfg!(target_os = "android") { span { "{crate::views::z(&v.file).as_str()}" } }
+                            else { span { "{crate::views::z(&v.file).as_str()} in {crate::views::z(&v.place).as_str()}" } } } }
                     }
                     button { class: "set-row", id: "settings-switch",
                         onclick: { let c = controller.clone(); move |_| { c.switch_vault(epoch, crate::controller::SwitchTo::Mode(crate::controller::Mode::Unlock)); } },
                         span { class: "si", Svg { icon: Icon::Lock } } span { class: "l", b { "Switch vault" } span { "Locks this vault; open, create or join another from the lock screen" } } Svg { icon: Icon::Right }
                     }
-                    div { class: "set-row", id: "settings-folder", span { class: "si", Svg { icon: Icon::Folder } } span { class: "l", b { "Folder for new vaults" } span { "{folder_place}" } }
-                        if cfg!(any(target_os = "linux", windows)) && !crate::documents::picker_missing() {
-                            button { class: "btn", id: "settings-folder-change", onclick: pick_folder, "Change…" }
+                    if !cfg!(target_os = "android") {
+                        div { class: "set-row", id: "settings-folder", span { class: "si", Svg { icon: Icon::Folder } } span { class: "l", b { "Folder for new vaults" } span { "{folder_place}" } }
+                            if cfg!(any(target_os = "linux", windows)) && !crate::documents::picker_missing() {
+                                button { class: "btn", id: "settings-folder-change", onclick: pick_folder, "Change…" }
+                            }
                         }
                     }
                     {row(Icon::Edit, "Name and retention", "Vault name, description, history and trash", Screen::Settings(Pane::General), "settings-general")}
@@ -1236,6 +1245,65 @@ fn protection_gaps(
     .map(|(_, name)| name)
     .collect()
 }
+/// The quick-unlock card for the current policy (plan 0068): what is on, how
+/// to turn it off, and the other policy behind the master password. The
+/// active policy is never offered "again": a password unlock after expiry
+/// enrolls fingerprint unlock by itself (0009 §1.8).
+fn quick_card(
+    controller: &Controller,
+    epoch: FormEpoch,
+    policy: Option<qv_core::platform::QuickPolicy>,
+) -> Element {
+    use qv_core::platform::QuickPolicy::{Class3, DeviceCredential};
+    let enroll = |p| act(controller, epoch, WsAction::EnrollQuick(p));
+    let password = rsx! {
+        Input { controller: controller.clone(), epoch, field: WsField::Password, label: "Master password", kind: Kind::Secret, value: None, disabled: false }
+    };
+    let expiry = rsx! {
+        p { class: "hint", "Restarting the phone, seven days, three failed attempts or a password change ask for the master password again." }
+    };
+    match policy {
+        None => rsx! {
+            p { class: "hint", "Off. Enter your master password to turn on fingerprint unlock." }
+            {expiry}
+            {password}
+            div { class: "actions stack",
+                button { class: "btn primary", "data-qv-clear": "true", onclick: enroll(Class3), Svg { icon: Icon::Finger } "Turn on fingerprint unlock" }
+                button { class: "btn", "data-qv-clear": "true", onclick: enroll(DeviceCredential), "Use your screen lock PIN or pattern instead (lower protection)…" }
+            }
+        },
+        Some(Class3) => rsx! {
+            div { class: "banner ok", id: "quick-on", Svg { icon: Icon::Finger } span { "Fingerprint unlock is on. The locked screen asks for your fingerprint first." } }
+            {expiry}
+            div { class: "actions stack",
+                button { class: "btn", id: "quick-off", onclick: act(controller, epoch, WsAction::DisableQuick), "Turn off fingerprint unlock" }
+            }
+            div { class: "quick-alt",
+                b { "Screen lock instead" }
+                p { class: "hint", "Lower protection: your PIN or pattern would open this vault, so anyone who knows it could too." }
+                {password}
+                div { class: "actions stack",
+                    button { class: "btn", "data-qv-clear": "true", onclick: enroll(DeviceCredential), "Use your screen lock instead…" }
+                }
+            }
+        },
+        Some(DeviceCredential) => rsx! {
+            div { class: "banner ok", id: "quick-on", Svg { icon: Icon::Finger } span { "Screen-lock unlock is on (lower protection: your PIN or pattern opens this vault)." } }
+            {expiry}
+            div { class: "actions stack",
+                button { class: "btn", id: "quick-off", onclick: act(controller, epoch, WsAction::DisableQuick), "Turn off screen-lock unlock" }
+            }
+            div { class: "quick-alt",
+                b { "Fingerprint instead" }
+                p { class: "hint", "Higher protection: only your fingerprint opens this vault, not your PIN or pattern." }
+                {password}
+                div { class: "actions stack",
+                    button { class: "btn primary", "data-qv-clear": "true", onclick: enroll(Class3), Svg { icon: Icon::Finger } "Switch to fingerprint unlock" }
+                }
+            }
+        },
+    }
+}
 #[component]
 fn QuickSettings(controller: Controller, epoch: FormEpoch, revision: u64) -> Element {
     let _ = revision;
@@ -1247,18 +1315,7 @@ fn QuickSettings(controller: Controller, epoch: FormEpoch, revision: u64) -> Ele
             if !available {
                 p { class: "hint", "Unavailable: this device has no supported fingerprint or screen lock for QuickVault. The master password still works." }
             } else {
-                match policy {
-                    Some(qv_core::platform::QuickPolicy::Class3) => rsx! { div { class: "banner ok", id: "quick-on", Svg { icon: Icon::Finger } span { "Fingerprint unlock is on. The locked screen asks for your fingerprint first." } } },
-                    Some(qv_core::platform::QuickPolicy::DeviceCredential) => rsx! { div { class: "banner ok", id: "quick-on", Svg { icon: Icon::Finger } span { "Screen-lock unlock is on (lower protection: your PIN or pattern opens this vault)." } } },
-                    None => rsx! { p { class: "hint", "Off. Enter your master password to turn on fingerprint unlock." } },
-                }
-                p { class: "hint", "Restarting the phone, seven days, three failed attempts or a password change ask for the master password again." }
-                Input { controller: controller.clone(), epoch, field: WsField::Password, label: "Master password", kind: Kind::Secret, value: None, disabled: false }
-                div { class: "actions start",
-                    button { class: "btn primary", "data-qv-clear": "true", onclick: act(&controller, epoch, WsAction::EnrollQuick(qv_core::platform::QuickPolicy::Class3)), Svg { icon: Icon::Finger } if policy.is_some() { "Turn on fingerprint unlock again" } else { "Turn on fingerprint unlock" } }
-                    button { class: "btn", "data-qv-clear": "true", onclick: act(&controller, epoch, WsAction::EnrollQuick(qv_core::platform::QuickPolicy::DeviceCredential)), "Use your screen lock PIN or pattern instead (lower protection)…" }
-                    if policy.is_some() { button { class: "btn subtle", id: "quick-off", onclick: act(&controller, epoch, WsAction::DisableQuick), "Turn off quick unlock" } }
-                }
+                {quick_card(&controller, epoch, policy)}
             }
         }
         div { class: "group-t", "AUTOFILL" }

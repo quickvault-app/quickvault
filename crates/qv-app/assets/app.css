@@ -34,6 +34,8 @@ html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;backgrou
   container-type:inline-size;container-name:app;user-select:none;-webkit-user-select:none;cursor:default;-webkit-font-smoothing:antialiased}
 @media (pointer:coarse){.qv{font-size:15.5px}}
 .qv *{box-sizing:border-box}
+/* `hidden` wins over a class's display (plan 0068). */
+.qv [hidden]{display:none!important}
 .qv button{font:inherit;color:inherit;cursor:default;-webkit-tap-highlight-color:transparent}
 .qv input,.qv textarea{font:inherit;color:var(--text);user-select:text;-webkit-user-select:text}
 .qv :focus{outline:none}
@@ -105,9 +107,12 @@ kbd{font:11px system-ui,sans-serif;border:1px solid var(--line);border-bottom-wi
 .rz-se{bottom:0;right:0;width:9px;height:9px;cursor:se-resize}.rz-sw{bottom:0;left:0;width:9px;height:9px;cursor:sw-resize}
 
 /* ===== Locked screens ===== */
-.locked{flex:1;min-height:0;display:flex;flex-direction:column;position:relative;overflow:auto}
-.locked::before{content:"";position:absolute;width:900px;height:900px;border-radius:50%;background:radial-gradient(circle,var(--soft),transparent 60%);top:50%;left:50%;transform:translate(-50%,-62%);pointer-events:none}
-.locked-body{position:relative;flex:1;display:grid;place-items:center;padding:24px 16px 70px}
+/* The glow is the background, so it adds no scroll range on a phone (plan 0068):
+   a 900 px circle centred 108 px above the middle, clear from 60 %. */
+.locked{flex:1;min-height:0;display:flex;flex-direction:column;position:relative;overflow:auto;
+  background:radial-gradient(circle 636px at 50% calc(50% - 108px),var(--soft),transparent 60%)}
+.locked-body{position:relative;flex:1;display:grid;grid-template-columns:minmax(0,1fr);place-items:center;padding:24px 16px 70px}
+.locked-body .banner .sp{min-width:0;overflow-wrap:anywhere}
 .unlock-card{width:min(360px,100%);display:flex;flex-direction:column;align-items:center;gap:16px}
 .safe{position:relative;width:132px;height:132px;display:grid;place-items:center}
 .safe .ticks{position:absolute;inset:0;animation:spin 60s linear infinite}
@@ -305,6 +310,9 @@ input::-webkit-caps-lock-indicator{display:none;content:none}
 .fld .acts{display:flex;gap:2px}
 .revealed{font-family:ui-monospace,"JetBrains Mono","DejaVu Sans Mono",monospace;user-select:none;-webkit-user-select:none}
 .revealring{width:22px;height:22px;transform:rotate(-90deg)}
+.hide-ring{position:relative;width:26px;height:26px;display:grid;place-items:center}
+.hide-ring .revealring{position:absolute;inset:0;width:100%;height:100%}
+.hide-ring .ico{width:13px;height:13px}
 .revealring circle{fill:none;stroke-width:2.5}
 .totp{display:flex;align-items:center;gap:10px}
 .totp .code{font-size:18px;font-weight:600;letter-spacing:.12em}
@@ -392,6 +400,9 @@ input::-webkit-caps-lock-indicator{display:none;content:none}
 .sw::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .18s cubic-bezier(.3,1.4,.6,1)}
 .sw[aria-checked="true"]{background:var(--accent)}
 .sw[aria-checked="true"]::after{transform:translateX(16px)}
+/* Quick unlock: the other policy, below the current one (plan 0068). */
+.quick-alt{margin-top:16px;padding-top:12px;border-top:1px solid var(--line2)}
+.quick-alt>b{display:block;font-weight:600}
 .group-t{font-size:11.5px;font-weight:600;color:var(--text3);letter-spacing:.05em;margin:22px 4px 8px}
 .set-row{display:flex;align-items:center;gap:14px;width:100%;min-height:56px;padding:10px 16px;border:0;border-bottom:1px solid var(--line2);background:none;text-align:left;flex-wrap:wrap}
 .set-row:last-child{border-bottom:0}
@@ -535,7 +546,7 @@ button.set-row:hover:enabled{background:var(--raised)}
   .hero{flex-wrap:wrap}
   .fld{min-height:64px}
   .icon-btn{width:40px;height:40px}
-  .btn{height:42px;border-radius:12px}
+  .btn{height:auto;min-height:42px;border-radius:12px;max-width:100%;white-space:normal;text-align:center;line-height:1.3;padding-top:6px;padding-bottom:6px}
   .dialog{top:auto;bottom:0;left:0;transform:none;width:100%;max-height:92%;border-radius:22px 22px 0 0;border-bottom:0;animation:rise .22s ease-out;padding:22px 20px calc(26px + env(safe-area-inset-bottom))}
   .dialog.wide{width:100%}
   .menu{left:12px!important;right:12px!important;top:auto!important;bottom:12px!important;min-width:0;animation:rise .18s ease-out}
@@ -544,6 +555,8 @@ button.set-row:hover:enabled{background:var(--raised)}
   .phrase{grid-template-columns:repeat(3,minmax(0,1fr))}
   .toasts{bottom:92px}
   .choices{grid-template-columns:minmax(0,1fr)}
+  /* Choices inside a banner stack at one width, edges aligned (plan 0068). */
+  .banner .actions{flex-direction:column;align-items:stretch}
   .locked-body{padding:16px 16px 80px}
   .wizard{border:0;box-shadow:none;background:none;padding:8px 2px}
 }
@@ -972,9 +985,11 @@ button.set-row:hover:enabled{background:var(--raised)}
 .vcard.on{border-color:var(--accent);background:linear-gradient(135deg,var(--soft),transparent 70%)}
 .vcard .live{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--soft)}
 .vcard .btn{flex:none}
-.vmore{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
-.vact{display:flex;align-items:center;gap:10px;padding:12px;border-radius:14px;border:1px dashed var(--line);background:none;color:var(--text2);font-weight:560}
-.vact .ci{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:var(--soft);color:var(--accent)}
+/* One action per row, like the vault cards: a two-column grid left the
+   third action alone with empty space beside it (plan 0068). */
+.vmore{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.vact{display:flex;align-items:center;gap:12px;width:100%;padding:9px 12px;border-radius:14px;border:1px dashed var(--line);background:none;color:var(--text2);font-weight:560;text-align:left}
+.vact .ci{flex:none;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:var(--soft);color:var(--accent)}
 .vault-sheet .note{margin:12px 0 0;text-align:center;color:var(--text3);font-size:12px}
 @media (hover:hover){.vcard:hover:enabled,.vact:hover:enabled{border-color:var(--accent)}}
 /* Plan 0045: covered while in the background and until the next frame on return. */

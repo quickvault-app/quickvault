@@ -40,6 +40,13 @@ pub const QUERY_MAX: usize = 256;
 pub const PATH_MAX: usize = 4096;
 /// Bounded back stack.
 const BACK_MAX: usize = 32;
+/// How long a notice toast stays (plan 0068): long enough to read it, about
+/// 12 characters a second, between 4 and 12 seconds; at least 8 with Undo.
+/// Errors stay until dismissed.
+pub(crate) fn notice_for(text: &str, undo: bool) -> Duration {
+    let read = (text.chars().count() as u64 / 12).clamp(4, 12);
+    Duration::from_secs(if undo { read.max(8) } else { read })
+}
 
 /// The unlocked screen authorized by Rust state.
 #[derive(Clone, PartialEq)]
@@ -650,6 +657,9 @@ pub struct Workspace {
     /// by the deletion when it runs.
     pub(crate) keep_snapshots: bool,
     pub(crate) notice: Option<&'static str>,
+    /// The notice being timed (its text, whether it offers Undo) and when it
+    /// was first seen.
+    notice_since: Option<(&'static str, bool, Instant)>,
     pub(crate) error: Option<AppError>,
     pub(crate) report: Option<Report>,
     /// What was just moved to the trash, until the next navigation (Undo).
@@ -762,6 +772,7 @@ impl Workspace {
             pending: None,
             keep_snapshots: false,
             notice: None,
+            notice_since: None,
             error: None,
             report: None,
             undo: None,
@@ -811,6 +822,31 @@ impl Workspace {
         self.error = None;
         self.searched = false;
         self.undo = None;
+    }
+    /// Clears a notice (and its Undo) once it has shown for
+    /// [`notice_for`]; `true` when it did. A new notice text restarts the
+    /// time.
+    pub(crate) fn expire_notice(&mut self, now: Instant) -> bool {
+        let Some(text) = self.notice else {
+            self.notice_since = None;
+            return false;
+        };
+        let undo = self.undo.is_some();
+        match self.notice_since {
+            Some((seen, had_undo, since)) if seen == text && had_undo == undo => {
+                if now.saturating_duration_since(since) < notice_for(text, undo) {
+                    return false;
+                }
+                self.notice = None;
+                self.undo = None;
+                self.notice_since = None;
+                true
+            }
+            _ => {
+                self.notice_since = Some((text, undo, now));
+                false
+            }
+        }
     }
     pub(crate) fn go(&mut self, to: Screen) {
         if self.screen != to {
@@ -1726,5 +1762,37 @@ pub(crate) fn backdate_reveal(ws: &mut Workspace, by: Duration) {
 pub(crate) fn backdate_generated(ws: &mut Workspace, by: Duration) {
     if let Some(g) = ws.generated.as_mut() {
         g.1 = g.1.checked_sub(by).unwrap_or(g.1);
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    // Owner report (plan 0068): notices go away by themselves.
+    #[test]
+    fn notices_expire_after_their_reading_time_and_restart_when_replaced() {
+        let mut ws = Workspace::new(false);
+        let t0 = Instant::now();
+        assert!(!ws.expire_notice(t0), "nothing to expire");
+        ws.notice = Some("Saved");
+        assert!(!ws.expire_notice(t0), "first seen starts the time");
+        assert!(!ws.expire_notice(t0 + Duration::from_millis(3900)));
+        assert!(ws.expire_notice(t0 + Duration::from_secs(4)));
+        assert_eq!(ws.notice, None);
+        // A different notice restarts the time; Undo keeps it longer and
+        // goes with it.
+        ws.notice = Some("Saved");
+        assert!(!ws.expire_notice(t0));
+        ws.notice = Some("Moved to the trash.");
+        ws.undo = Some(Undo::Entries(Vec::new()));
+        assert!(!ws.expire_notice(t0 + Duration::from_secs(3)));
+        assert!(!ws.expire_notice(t0 + Duration::from_secs(10)));
+        assert!(ws.expire_notice(t0 + Duration::from_secs(11)));
+        assert_eq!((ws.notice, ws.undo.is_none()), (None, true));
+        // Long instructions stay long enough to read; never past 12 s.
+        assert_eq!(notice_for(&"x".repeat(96), false), Duration::from_secs(8));
+        assert_eq!(notice_for(&"x".repeat(400), false), Duration::from_secs(12));
+        assert_eq!(notice_for("Saved", true), Duration::from_secs(8));
     }
 }

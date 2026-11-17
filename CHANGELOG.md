@@ -7,6 +7,19 @@ Dates are ISO 8601. Newest first within each section.
 
 ## Unreleased
 
+- 2026-11-17: Phone UI polish (plan 0068). The quick-unlock settings show
+  what is on, a real "Turn off" button and the other policy behind the
+  master password, with no "turn on again"; phone buttons wrap instead of
+  running off the screen. The vault sheet lists its actions one per row.
+  The create wizard no longer shows Android's private folder (which made it
+  wider than the screen), and the locked screen's glow no longer scrolls
+  sideways. Settings name the screen-lock policy and hide Android's private
+  paths. A scan panel now always closes with its scan, Cancel closes it at
+  once, and a redraw lost while the screen was still is retried.
+  Second owner batch: notices such as "Saved" go away by themselves (4–12 s
+  by length, 8 s with Undo; errors stay); the hide button shows a crossed
+  eye inside its countdown ring; the weak-password choices stack aligned on
+  phones; the move dialog says which group has no subgroups.
 - 2026-11-17: Fix Windows desktop startup rejecting WebView2's mapped app
   URL and leaving the window hidden. Navigation, IPC and media requests now
   use the exact platform origin; add Windows CI boundary regressions (plan 0067).

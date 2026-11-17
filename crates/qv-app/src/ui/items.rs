@@ -871,7 +871,7 @@ fn FieldLine(
         Zeroizing::new(String::new())
     };
     let left = live.reveal_left.min(30);
-    let offset = 56.5 - 56.5 * (left as f64) / 30.0;
+    let offset = 62.8 - 62.8 * (left as f64) / 30.0;
     let copy_key = entry.filter(|_| copy).map(|e| {
         if totp {
             CopyKey::Totp(e, field.handle)
@@ -879,10 +879,14 @@ fn FieldLine(
             CopyKey::Field(e, field.handle)
         }
     });
+    // Hide: the crossed eye inside the 30 s countdown ring (plan 0068).
     let ring = rsx! {
-        svg { class: "revealring", view_box: "0 0 22 22", "aria-hidden": "true",
-            circle { class: "track", cx: "11", cy: "11", r: "9" }
-            circle { class: "left", cx: "11", cy: "11", r: "9", stroke_dasharray: "56.5", stroke_dashoffset: "{offset:.1}" }
+        span { class: "hide-ring",
+            svg { class: "revealring", view_box: "0 0 22 22", "aria-hidden": "true",
+                circle { class: "track", cx: "11", cy: "11", r: "10" }
+                circle { class: "left", cx: "11", cy: "11", r: "10", stroke_dasharray: "62.8", stroke_dashoffset: "{offset:.1}" }
+            }
+            Svg { icon: Icon::EyeOff }
         }
     };
     rsx! {
@@ -1202,7 +1206,15 @@ fn MoveScreen(
                 }
             }
             div { class: "card",
-                if view.groups.iter().all(|g| ItemHandle::Group(g.handle) == item) { div { class: "set-row", span { class: "l", span { "No groups inside this one." } } } }
+                // Groups nest (New subgroup in a group's menu); say which
+                // level is empty rather than a bare "inside this one".
+                if view.groups.iter().all(|g| ItemHandle::Group(g.handle) == item) {
+                    div { class: "set-row", span { class: "l", span {
+                        if view.root { "No groups yet. Move here keeps it in All items." }
+                        else if let Some((_, name)) = view.crumbs.last() { "“{name.as_str()}” has no subgroups. Move here puts it in “{name.as_str()}”." }
+                        else { "No subgroups here." }
+                    } } }
+                }
                 for g in view.groups.iter().filter(|&g| ItemHandle::Group(g.handle) != item).cloned() {
                     button { class: "set-row", onclick: go(&controller, epoch, Screen::Move(item, Some(g.handle))),
                         span { class: "si", Svg { icon: Icon::Folder } } span { class: "l", b { "{g.name.as_str()}" } } Svg { icon: Icon::Right }
